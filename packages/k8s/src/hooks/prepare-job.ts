@@ -12,7 +12,7 @@ import {
   createJobPod,
   isPodContainerAlpine,
   prunePods,
-  waitForPodPhases,
+  waitForJobPodRunning,
   getPrepareJobTimeoutSeconds,
   execCpToPod,
   execPodStep
@@ -25,7 +25,6 @@ import {
   generateContainerName,
   mergeContainerWithOptions,
   readExtensionFromFile,
-  PodPhase,
   fixArgs,
   prepareJobScript
 } from '../k8s/utils'
@@ -38,9 +37,11 @@ import { dirname } from 'path'
 import {
   formatCopyStats,
   formatSeconds,
+  HOOK_LOG_PREFIX,
   hookInfo,
   Stopwatch
 } from '../k8s/hook-log'
+import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
 
 export async function prepareJob(
   args: PrepareJobArgs,
@@ -131,12 +132,22 @@ export async function prepareJob(
     prepareScript = prepareJobScript(args.container.userMountVolumes || [])
   }
 
+  const prepareTimeoutSeconds = getPrepareJobTimeoutSeconds()
+  const failFast = resolveFailFastSettings(
+    args.container.environmentVariables,
+    process.env,
+    prepareTimeoutSeconds
+  )
+  for (const warning of failFast.warnings) {
+    core.warning(`${HOOK_LOG_PREFIX} ${warning}`)
+  }
+  hookInfo(renderSettings(failFast))
+
   try {
-    await waitForPodPhases(
+    await waitForJobPodRunning(
       createdPod.metadata.name,
-      new Set([PodPhase.RUNNING]),
-      new Set([PodPhase.PENDING]),
-      getPrepareJobTimeoutSeconds()
+      prepareTimeoutSeconds,
+      failFast
     )
   } catch (err) {
     await prunePods()

@@ -34,6 +34,14 @@ import {
   TarEntryCounter
 } from './hook-log'
 import { PollSchedule } from './poll'
+import {
+  eventsSince,
+  FailFastSettings,
+  FailFastTracker,
+  PodStatusReporter,
+  renderEvent,
+  renderPodTrouble
+} from './pod-status'
 import type { HeartbeatWebSocket } from './heartbeat'
 
 const kc = new k8s.KubeConfig()
@@ -876,6 +884,140 @@ export async function waitForPodPhases(
   }
 }
 
+function apiErrorCode(error: unknown): number | undefined {
+  const code = (error as { code?: unknown })?.code
+  return typeof code === 'number' ? code : undefined
+}
+
+// Events about one pod. Needs `list` on `events` in the runner's Role, which ARC's
+// kubernetes-mode Role does not grant: add it through
+// containerMode.kubernetesModeAdditionalRoleRules.
+export async function listPodEvents(
+  podUid: string
+): Promise<k8s.CoreV1Event[]> {
+  const list = await k8sApi.listNamespacedEvent({
+    namespace: namespace(),
+    fieldSelector: `involvedObject.uid=${podUid}`
+  })
+  return list.items
+}
+
+const EVENTS_INTERVAL_MS = 2000
+
+// Waits for the job pod to be Running, like waitForPodPhases, and shows what the pod is
+// doing in the job log meanwhile (see pod-status.ts). Fails early when a container waits
+// with a reason that does not resolve on its own (FailFastTracker).
+export async function waitForJobPodRunning(
+  podName: string,
+  maxTimeSeconds: number,
+  failFast: FailFastSettings
+): Promise<void> {
+  const schedule = new PollSchedule()
+  const timer = new Stopwatch()
+  const reporter = new PodStatusReporter(line => hookInfo(line))
+  const tracker = new FailFastTracker(failFast)
+  let canListEvents = true
+  let lastEventsMs: number | undefined
+
+  const showEvents = async (pod: k8s.V1Pod): Promise<void> => {
+    const uid = pod.metadata?.uid
+    if (!canListEvents || !uid) {
+      return
+    }
+    lastEventsMs = Date.now()
+    try {
+      reporter.addEvents(pod, await listPodEvents(uid))
+    } catch (error) {
+      if (apiErrorCode(error) === 403) {
+        canListEvents = false
+        core.warning(
+          `${HOOK_LOG_PREFIX} cannot list events in ${namespace()}, so only the pod's ` +
+            'status is shown. Grant `get` and `list` on `events` to the runner to see them.'
+        )
+      } else {
+        core.debug(`listing events failed: ${formatError(error)}`)
+      }
+    }
+  }
+
+  let phase: PodPhase = PodPhase.UNKNOWN
+  try {
+    while (true) {
+      const pod = await getPodByName(podName)
+      phase = podPhase(pod)
+      if (
+        lastEventsMs === undefined ||
+        Date.now() - lastEventsMs >= EVENTS_INTERVAL_MS
+      ) {
+        await showEvents(pod)
+      }
+      reporter.observe(pod)
+
+      if (phase === PodPhase.RUNNING) {
+        await showEvents(pod)
+        reporter.ready(pod)
+        return
+      }
+      const failure = tracker.check(pod)
+      if (failure) {
+        await showEvents(pod)
+        throw new Error(`failed fast: ${failure}`)
+      }
+      if (phase !== PodPhase.PENDING) {
+        throw new Error(
+          `Pod ${podName} is unhealthy with phase status ${phase}`
+        )
+      }
+      if (maxTimeSeconds > 0 && timer.elapsedMs() >= maxTimeSeconds * 1000) {
+        throw new Error(`timed out after ${maxTimeSeconds}s`)
+      }
+      await sleep(schedule.next())
+    }
+  } catch (error) {
+    throw new Error(
+      `Pod ${podName} is unhealthy with phase status ${phase}: ${formatError(error)}`
+    )
+  }
+}
+
+// After a step failed: print, as errors, what happened to the job pod (OOM kill, eviction,
+// the pod gone) and the pod's events since the step started. A plain step failure, like a
+// failing test, changes nothing in the pod, so nothing is printed. Never throws.
+export async function reportPodTrouble(
+  podName: string,
+  stepStartedMs: number
+): Promise<void> {
+  try {
+    let pod: k8s.V1Pod
+    try {
+      pod = await getPodByName(podName)
+    } catch (error) {
+      if (apiErrorCode(error) === 404) {
+        core.error(`${HOOK_LOG_PREFIX} job pod ${podName} no longer exists`)
+      } else {
+        core.debug(`reading the job pod failed: ${formatError(error)}`)
+      }
+      return
+    }
+    let events: k8s.CoreV1Event[] = []
+    if (pod.metadata?.uid) {
+      try {
+        events = eventsSince(
+          await listPodEvents(pod.metadata.uid),
+          stepStartedMs
+        )
+      } catch (error) {
+        core.debug(`listing events failed: ${formatError(error)}`)
+      }
+    }
+    for (const line of [...renderPodTrouble(pod), ...events.map(renderEvent)]) {
+      core.error(`${HOOK_LOG_PREFIX} ${line}`)
+    }
+  } catch (error) {
+    core.debug(`reporting the job pod's state failed: ${formatError(error)}`)
+  }
+}
+
 export function getPrepareJobTimeoutSeconds(): number {
   const envTimeoutSeconds =
     process.env['ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS']
@@ -895,23 +1037,27 @@ export function getPrepareJobTimeoutSeconds(): number {
   return timeoutSeconds
 }
 
+const POD_PHASES = new Set<string>([
+  PodPhase.PENDING,
+  PodPhase.RUNNING,
+  PodPhase.SUCCEEDED,
+  PodPhase.FAILED,
+  PodPhase.UNKNOWN
+])
+
+function podPhase(pod: k8s.V1Pod): PodPhase {
+  if (!pod.status?.phase || !POD_PHASES.has(pod.status.phase)) {
+    return PodPhase.UNKNOWN
+  }
+  return pod.status.phase as PodPhase
+}
+
 async function getPodPhase(name: string): Promise<PodPhase> {
-  const podPhaseLookup = new Set<string>([
-    PodPhase.PENDING,
-    PodPhase.RUNNING,
-    PodPhase.SUCCEEDED,
-    PodPhase.FAILED,
-    PodPhase.UNKNOWN
-  ])
   const pod = await k8sApi.readNamespacedPod({
     name,
     namespace: namespace()
   })
-
-  if (!pod.status?.phase || !podPhaseLookup.has(pod.status.phase)) {
-    return PodPhase.UNKNOWN
-  }
-  return pod.status?.phase as PodPhase
+  return podPhase(pod)
 }
 
 async function isJobSucceeded(name: string): Promise<boolean> {

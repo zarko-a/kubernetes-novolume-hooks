@@ -2,7 +2,12 @@
 import * as fs from 'fs'
 import * as core from '@actions/core'
 import { RunScriptStepArgs } from 'hooklib'
-import { execCpFromPod, execCpToPod, execPodStep } from '../k8s'
+import {
+  execCpFromPod,
+  execCpToPod,
+  execPodStep,
+  reportPodTrouble
+} from '../k8s'
 import {
   formatError,
   writeRunScript,
@@ -74,6 +79,7 @@ export async function runScriptStep(
   args.entryPoint = 'sh'
   args.entryPointArgs = ['-e', containerPath]
   const stepTimer = new Stopwatch()
+  const stepStartedMs = Date.now()
   let stepMs = 0
   try {
     await execPodStep(
@@ -84,6 +90,7 @@ export async function runScriptStep(
   } catch (err) {
     const message = formatError(err)
     core.debug(`execPodStep failed: ${message}`)
+    await reportPodTrouble(state.jobPod, stepStartedMs)
     throw new Error(`failed to run script step: ${message}`)
   } finally {
     stepMs = stepTimer.elapsedMs()

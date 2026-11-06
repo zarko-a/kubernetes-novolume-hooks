@@ -10,6 +10,20 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- Pod status in the job log while the job pod starts: every event about the pod (once each,
+  again when an aggregated event repeats), the pod's phase, conditions and container states
+  whenever they change, a heartbeat every 5 quiet seconds, and once Running, when each
+  condition turned true and each container started. Kubernetes' reasons and messages are
+  passed through as they are. Needs `get` and `list` on `events`; without them a warning says
+  so and only the pod's status is shown.
+- Fail fast: when a container in the job pod waits with `ErrImagePull`/`ImagePullBackOff` or
+  `CreateContainerConfigError` for longer than a grace period, or with `InvalidImageName` at
+  all, `prepare_job` fails with the kubelet's message instead of waiting for the 10-minute
+  timeout. `HOOK_FAIL_FAST` (default `true`) and `HOOK_FAIL_FAST_SECONDS` (default `60`) are
+  read from the job container's env, then the runner's env.
+- When a step fails, the job pod's trouble is printed as errors: an OOM kill with the memory
+  limit, an eviction, the pod gone, and the pod's events since the step started. A plain
+  failure, like a failing test, prints nothing extra.
 - Timing lines in the job log, prefixed `[custom-hook]`: job pod creation and time to
   Running, every copy to and from the job pod (files, bytes, transfer time, retries, and
   whether the hash check matched), the `_temp` merge, and the total time of `prepare_job` and
