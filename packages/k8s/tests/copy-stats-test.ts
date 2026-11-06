@@ -115,6 +115,17 @@ describe('copy stats', () => {
     )
   })
 
+  it('execCpToPod fixes permissions with batched chmod', async () => {
+    mockExec.mockImplementation(execSucceeding(''))
+
+    await execCpToPod('pod', emptyDir, '/__w')
+
+    const script = (mockExec.mock.calls[0][3] as string[])[2]
+    expect(script).toContain('find /__w -type f -exec chmod u+rw {} +')
+    expect(script).toContain('find /__w -type d -exec chmod u+rwx {} +')
+    expect(script).not.toContain('\\;')
+  })
+
   it('execCpToPod reports a copy whose hash never matched', async () => {
     mockExec.mockImplementation(execSucceeding('5 ./only-in-pod\n'))
 

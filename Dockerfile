@@ -16,8 +16,8 @@
 # signatures of everything it installed. Base images are pinned by tag and digest; bump both
 # together.
 
-# The bundle is plain JavaScript, so it is built once on the build host's platform and
-# copied into each architecture's runner image, instead of running npm under emulation.
+# The bundle is plain JavaScript, so it is built on the build host's platform and copied into
+# each architecture's runner image, instead of running npm under emulation.
 FROM --platform=$BUILDPLATFORM docker.io/library/node:24.22.2-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS builder
 
 RUN install -d -o node -g node /build

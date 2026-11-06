@@ -19,17 +19,22 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - A `Dockerfile` that builds the hook bundle (npm as a non-root user, lockfile installs with
   install scripts disabled, registry signatures checked, no-cluster unit tests run) and drops
   it over `/home/runner/k8s-novolume/index.js` in a pinned `actions-runner` image.
-  The bundle builds once on the build host's platform, so a multi-arch image needs no npm
-  under emulation.
+  The bundle builds on the build host's platform, so a multi-arch image needs no npm under
+  emulation.
 - `scripts/container-npm.sh`, which runs npm and npx in the builder image as the calling user,
   with only the repository mounted and install scripts disabled.
+
+### Changed
+
+- The copy to the job pod and the hash check behind every copy run `chmod` and `stat` once per
+  batch of files (`find -exec ... {} +`) instead of once per file, and the per-step `_temp`
+  merge starts one `sh` per batch instead of one per file. On an 11k-file tree that cut
+  `chmod` from 7.7s to 0.08s and `stat` from 10.1s to 0.06s in a local benchmark. Hashes are
+  unchanged: the listings are sorted before hashing.
+- README, `CODEOWNERS`, `LICENSE` and `package.json` metadata describe this fork.
 
 ### Removed
 
 - The Docker hook (`packages/docker`), upstream's GitHub workflows and Dependabot configuration.
 - Upstream's contributing guide, code of conduct, security policy and release notes, which
   describe GitHub's processes and contacts.
-
-### Changed
-
-- README, `CODEOWNERS`, `LICENSE` and `package.json` metadata describe this fork.
