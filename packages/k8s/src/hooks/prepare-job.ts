@@ -15,6 +15,7 @@ import {
   waitForJobPodRunning,
   getPrepareJobTimeoutSeconds,
   execCpToPod,
+  execListing,
   execPodStep
 } from '../k8s'
 import {
@@ -42,6 +43,16 @@ import {
   Stopwatch
 } from '../k8s/hook-log'
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
+import {
+  formatWorkTransfer,
+  JOB_WORK_STATUS,
+  parseWorkStatus,
+  runnerPodIp,
+  startWorkServer,
+  WorkServer,
+  workUrl,
+  WorkStatus
+} from '../k8s/work-transfer'
 
 export async function prepareJob(
   args: PrepareJobArgs,
@@ -98,6 +109,99 @@ export async function prepareJob(
     throw new Error('No containers exist, skipping hook invocation')
   }
 
+  const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
+  const work = await serveWork(runnerWorkspace)
+  try {
+    await prepareJobPod(
+      // Spelled out so the type carries the check above.
+      { ...args, container: args.container },
+      responseFile,
+      container,
+      services,
+      serviceNames,
+      extension,
+      runnerWorkspace,
+      work
+    )
+  } finally {
+    await work?.server.close()
+  }
+  hookInfo(`prepare_job done in ${formatSeconds(totalTimer.elapsedMs())}`)
+}
+
+export interface ServedWork {
+  server: WorkServer
+  url: string
+}
+
+// Starts the HTTP server fs-init downloads `_work` from. Without one, the job pod gets
+// `_work` through the exec copy, as upstream.
+async function serveWork(root: string): Promise<ServedWork | undefined> {
+  const ip = runnerPodIp(process.env)
+  if (!ip) {
+    core.warning(
+      `${HOOK_LOG_PREFIX} cannot tell this runner pod's IP; set ACTIONS_RUNNER_POD_IP from ` +
+        'status.podIP. Copying _work through the API server instead.'
+    )
+    return undefined
+  }
+  try {
+    const server = await startWorkServer(root)
+    return { server, url: workUrl(ip, server.port) }
+  } catch (error) {
+    core.warning(
+      `${HOOK_LOG_PREFIX} cannot serve _work over HTTP (${formatError(error)}); ` +
+        'copying it through the API server instead.'
+    )
+    return undefined
+  }
+}
+
+// Logs the HTTP transfer if fs-init finished it, otherwise copies `_work` over exec.
+export async function copyWorkToPod(
+  podName: string,
+  runnerWorkspace: string,
+  work: ServedWork | undefined
+): Promise<void> {
+  if (work) {
+    let status: WorkStatus
+    try {
+      status = parseWorkStatus(
+        await execListing(podName, JOB_CONTAINER_NAME, [
+          'sh',
+          '-c',
+          `cat ${JOB_WORK_STATUS} 2>/dev/null || true`
+        ])
+      )
+    } catch (error) {
+      status = {
+        ok: false,
+        reason: `reading the status failed: ${formatError(error)}`
+      }
+    }
+    if (status.ok) {
+      hookInfo(formatWorkTransfer(work.server.stats, status.downloadMs))
+      return
+    }
+    core.warning(
+      `${HOOK_LOG_PREFIX} fs-init did not download _work over HTTP (${status.reason}); ` +
+        'copying it through the API server instead.'
+    )
+  }
+  const workStats = await execCpToPod(podName, runnerWorkspace, '/__w')
+  hookInfo(formatCopyStats('copy _work to job pod', workStats))
+}
+
+async function prepareJobPod(
+  args: PrepareJobArgs & { container: JobContainerInfo },
+  responseFile: string,
+  container: k8s.V1Container | undefined,
+  services: k8s.V1Container[],
+  serviceNames: string[],
+  extension: k8s.V1PodTemplateSpec | undefined,
+  runnerWorkspace: string,
+  work: ServedWork | undefined
+): Promise<void> {
   let createdPod: k8s.V1Pod | undefined = undefined
   const createTimer = new Stopwatch()
   try {
@@ -106,7 +210,8 @@ export async function prepareJob(
       container,
       services,
       args.container.registry,
-      extension
+      extension,
+      work && { url: work.url, token: work.server.token }
     )
   } catch (err) {
     await prunePods()
@@ -124,8 +229,6 @@ export async function prepareJob(
   core.debug(
     `Job pod created, waiting for it to come online ${createdPod?.metadata?.name}`
   )
-
-  const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
 
   let prepareScript: { containerPath: string; runnerPath: string } | undefined
   if (args.container?.userMountVolumes?.length) {
@@ -157,12 +260,7 @@ export async function prepareJob(
     `job pod Running ${formatSeconds(createTimer.elapsedMs())} after create`
   )
 
-  const workStats = await execCpToPod(
-    createdPod.metadata.name,
-    runnerWorkspace,
-    '/__w'
-  )
-  hookInfo(formatCopyStats('copy _work to job pod', workStats))
+  await copyWorkToPod(createdPod.metadata.name, runnerWorkspace, work)
 
   if (prepareScript) {
     await execPodStep(
@@ -203,7 +301,6 @@ export async function prepareJob(
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
   generateResponseFile(responseFile, args, createdPod, isAlpine, serviceNames)
-  hookInfo(`prepare_job done in ${formatSeconds(totalTimer.elapsedMs())}`)
 }
 
 function generateResponseFile(

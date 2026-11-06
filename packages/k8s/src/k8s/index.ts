@@ -44,6 +44,12 @@ import {
   renderPodTrouble
 } from './pod-status'
 import type { HeartbeatWebSocket } from './heartbeat'
+import {
+  WORK_TOKEN_ENV,
+  WORK_URL_ENV,
+  WorkDownload,
+  workDownloadScript
+} from './work-transfer'
 
 const kc = new k8s.KubeConfig()
 
@@ -87,7 +93,8 @@ export async function createJobPod(
   jobContainer?: k8s.V1Container,
   services?: k8s.V1Container[],
   registry?: Registry,
-  extension?: k8s.V1PodTemplateSpec
+  extension?: k8s.V1PodTemplateSpec,
+  workDownload?: WorkDownload
 ): Promise<k8s.V1Pod> {
   const containers: k8s.V1Container[] = []
   if (jobContainer) {
@@ -136,6 +143,11 @@ export async function createJobPod(
     initCommands.push(`mkdir -p /mnt/work/${workingDirPath}`)
   }
 
+  if (workDownload) {
+    // Last, after the directories exist. It always exits 0; see workDownloadScript.
+    initCommands.push(workDownloadScript())
+  }
+
   appPod.spec.initContainers = [
     {
       name: 'fs-init',
@@ -143,6 +155,12 @@ export async function createJobPod(
         process.env.ACTIONS_RUNNER_IMAGE ||
         'ghcr.io/actions/actions-runner:latest',
       command: ['sh', '-c', initCommands.join(' && ')],
+      env: workDownload
+        ? [
+            { name: WORK_URL_ENV, value: workDownload.url },
+            { name: WORK_TOKEN_ENV, value: workDownload.token }
+          ]
+        : undefined,
       securityContext: {
         runAsGroup: 1001,
         runAsUser: 1001

@@ -80,4 +80,38 @@ describe('job pod spec', () => {
     })
     expect(pod.spec?.securityContext?.fsGroup).toBe(1001)
   })
+
+  it('without a work download, fs-init gets no download and no env', async () => {
+    const pod = await createJobPod('runner-abc-workflow', {
+      name: 'job',
+      image: 'alpine'
+    })
+    const fsInit = pod.spec?.initContainers?.find(c => c.name === 'fs-init')
+    expect(fsInit?.env).toBeUndefined()
+    expect(fsInit?.command?.[2]).not.toContain('HOOK_WORK')
+  })
+
+  it('with a work download, fs-init downloads last and gets the URL and token', async () => {
+    const pod = await createJobPod(
+      'runner-abc-workflow',
+      { name: 'job', image: 'alpine' },
+      undefined,
+      undefined,
+      undefined,
+      { url: 'http://10.0.0.7:4567/work', token: 'secret-token' }
+    )
+    const fsInit = pod.spec?.initContainers?.find(c => c.name === 'fs-init')
+    expect(fsInit?.env).toEqual([
+      { name: 'HOOK_WORK_URL', value: 'http://10.0.0.7:4567/work' },
+      { name: 'HOOK_WORK_TOKEN', value: 'secret-token' }
+    ])
+    const script = fsInit?.command?.[2] as string
+    expect(script.indexOf('mkdir -p /mnt/work/repo/repo')).toBeLessThan(
+      script.indexOf('curl')
+    )
+    expect(script.trimEnd().endsWith(') || true')).toBe(true)
+    // The token reaches curl through the env, not the command line in the pod spec.
+    expect(script).not.toContain('secret-token')
+    expect(script).toContain('"Authorization: Bearer $HOOK_WORK_TOKEN"')
+  })
 })

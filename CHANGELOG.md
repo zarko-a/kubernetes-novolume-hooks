@@ -10,6 +10,15 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- The job pod's `fs-init` container downloads `_work` straight from the hook over HTTP, so
+  `prepare_job` no longer streams it through the API server and the kubelet after the pod is
+  Running. The hook serves a tar of `_work` on an ephemeral port for the length of
+  `prepare_job`, to requests carrying a one-time token, and passes the URL and token to
+  `fs-init` as `HOOK_WORK_URL` and `HOOK_WORK_TOKEN`. The runner pod's IP comes from
+  `ACTIONS_RUNNER_POD_IP` (set it from `status.podIP`), else from the first non-internal IPv4
+  address. Files arrive owned by uid 1001 and group-writable, so non-root job containers can
+  write them. If the download fails, or the IP is unknown, the hook warns and falls back to
+  the exec copy. The `fs-init` image needs `curl`, which the `actions-runner` image has.
 - Pod status in the job log while the job pod starts: every event about the pod (once each,
   again when an aggregated event repeats), the pod's phase, conditions and container states
   whenever they change, a heartbeat every 5 quiet seconds, and once Running, when each
