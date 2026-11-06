@@ -44,6 +44,7 @@ import {
 } from '../k8s/hook-log'
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
 import { startReadAhead } from '../k8s/read-ahead'
+import { ExternalsMode, resolveExternals } from '../k8s/externals'
 import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
@@ -120,10 +121,19 @@ export async function prepareJob(
     args.container.environmentVariables,
     process.env
   )
-  if (transfer.warning) {
-    core.warning(`${HOOK_LOG_PREFIX} ${transfer.warning}`)
+  const externals = resolveExternals(
+    args.container.environmentVariables,
+    process.env
+  )
+  for (const warning of [transfer.warning, externals.warning]) {
+    if (warning) {
+      core.warning(`${HOOK_LOG_PREFIX} ${warning}`)
+    }
   }
-  hookInfo(`work transfer ${transfer.mode} (${transfer.source})`)
+  hookInfo(
+    `work transfer ${transfer.mode} (${transfer.source}), ` +
+      `externals ${externals.mode} (${externals.source})`
+  )
   const work =
     transfer.mode === 'http' ? await serveWork(runnerWorkspace) : undefined
   try {
@@ -136,7 +146,8 @@ export async function prepareJob(
       serviceNames,
       extension,
       runnerWorkspace,
-      work
+      work,
+      externals.mode
     )
   } finally {
     readAhead.stop()
@@ -221,7 +232,8 @@ async function prepareJobPod(
   serviceNames: string[],
   extension: k8s.V1PodTemplateSpec | undefined,
   runnerWorkspace: string,
-  work: ServedWork | undefined
+  work: ServedWork | undefined,
+  externals: ExternalsMode
 ): Promise<void> {
   let createdPod: k8s.V1Pod | undefined = undefined
   const createTimer = new Stopwatch()
@@ -232,7 +244,8 @@ async function prepareJobPod(
       services,
       args.container.registry,
       extension,
-      work && { url: work.url, token: work.server.token }
+      work && { url: work.url, token: work.server.token },
+      externals
     )
   } catch (err) {
     await prunePods()

@@ -13,6 +13,7 @@ import {
   TarHeader
 } from './hook-log'
 import { formatError } from './utils'
+import { Env, resolveEnvChoice } from './settings'
 
 // The job pod's fs-init container downloads the runner's `_work` straight from the hook
 // process over HTTP, instead of the hook streaming it through the API server and the kubelet
@@ -20,10 +21,11 @@ import { formatError } from './utils'
 
 export const WORK_PATH = '/work'
 
-// fs-init's view of the status file, and the job container's (the externals volume). It is
-// outside `/__w`, so it is never copied back to the runner.
-export const FS_INIT_WORK_STATUS = '/mnt/externals/.hook-work'
-export const JOB_WORK_STATUS = '/__e/.hook-work'
+// fs-init's view of the status file, and the job container's (the github volume). It is
+// outside `/__w`, so it is never copied back to the runner, and not in the externals volume,
+// which is read-only when it is an image volume.
+export const FS_INIT_WORK_STATUS = '/mnt/github/.hook-work'
+export const JOB_WORK_STATUS = '/github/.hook-work'
 
 export const WORK_URL_ENV = 'HOOK_WORK_URL'
 export const WORK_TOKEN_ENV = 'HOOK_WORK_TOKEN'
@@ -38,35 +40,21 @@ export interface WorkTransferSetting {
   warning?: string
 }
 
-// HOOK_WORK_TRANSFER: `http` (default) or `exec`, from the job container's env, then the
-// runner's env. `exec` skips the HTTP attempt, for clusters where the job pod cannot reach
-// the runner pod (a NetworkPolicy, a firewall): there every job would otherwise wait for
-// curl's connect timeouts and retries before falling back.
+// HOOK_WORK_TRANSFER: `http` (default) or `exec`. `exec` skips the HTTP attempt, for clusters
+// where the job pod cannot reach the runner pod (a NetworkPolicy, a firewall): there every
+// job would otherwise wait for curl's connect timeouts and retries before falling back.
 export function resolveWorkTransfer(
-  jobEnv: Record<string, string | undefined> | undefined,
-  runnerEnv: Record<string, string | undefined>
+  jobEnv: Env | undefined,
+  runnerEnv: Env
 ): WorkTransferSetting {
-  let raw: string | undefined
-  let source = 'default'
-  if (jobEnv?.[WORK_TRANSFER_ENV]) {
-    raw = jobEnv[WORK_TRANSFER_ENV]
-    source = 'job container env'
-  } else if (runnerEnv[WORK_TRANSFER_ENV]) {
-    raw = runnerEnv[WORK_TRANSFER_ENV]
-    source = 'runner env'
-  }
-  if (raw === undefined) {
-    return { mode: 'http', source }
-  }
-  const value = raw.trim().toLowerCase()
-  if (value === 'http' || value === 'exec') {
-    return { mode: value, source }
-  }
-  return {
-    mode: 'http',
-    source: 'default',
-    warning: `${WORK_TRANSFER_ENV} from ${source} is "${raw}", not http or exec; using http`
-  }
+  const { value, source, warning } = resolveEnvChoice<WorkTransferMode>(
+    WORK_TRANSFER_ENV,
+    ['http', 'exec'],
+    'http',
+    jobEnv,
+    runnerEnv
+  )
+  return warning ? { mode: value, source, warning } : { mode: value, source }
 }
 
 export interface WorkDownload {

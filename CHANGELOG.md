@@ -10,6 +10,14 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- The runner's externals (`/__e`: node20, node24 and their Alpine builds, ~600 MB) are mounted
+  read-only from the runner image as an image volume, instead of `fs-init` copying them into
+  an emptyDir for every job. The copy wrote ~600 MB to the node's root volume per job; with a
+  few job pods starting together the volume sat at its throughput limit and containerd timed
+  out tearing down finished containers, holding job containers back by 10-15s.
+  `HOOK_EXTERNALS` (`image` by default, or `copy`) chooses; `image` needs image volumes
+  (Kubernetes 1.35+, or the `ImageVolume` feature gate on 1.33-1.34). The HTTP transfer's
+  status file moved from `/__e` to `/github`.
 - `prepare_job` reads `_work` into the runner pod's page cache as soon as it starts, with 32
   readers in parallel, so the copy to the job pod does not read the files from disk one at a
   time. The runner's freshly downloaded actions were often not cached: packing 11.6k files

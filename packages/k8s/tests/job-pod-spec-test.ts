@@ -20,6 +20,7 @@ jest.mock('@kubernetes/client-node', () => {
 })
 
 import { createJobPod } from '../src/k8s'
+import { CONTAINER_VOLUMES } from '../src/k8s/utils'
 
 describe('job pod spec', () => {
   beforeEach(() => {
@@ -113,5 +114,78 @@ describe('job pod spec', () => {
     // The token reaches curl through the env, not the command line in the pod spec.
     expect(script).not.toContain('secret-token')
     expect(script).toContain('"Authorization: Bearer $HOOK_WORK_TOKEN"')
+  })
+
+  describe('externals', () => {
+    beforeEach(() => {
+      process.env['ACTIONS_RUNNER_IMAGE'] = 'registry.example/runner:1.2.3'
+    })
+    afterEach(() => {
+      delete process.env['ACTIONS_RUNNER_IMAGE']
+    })
+
+    async function podWith(mode: 'image' | 'copy') {
+      return createJobPod(
+        'runner-abc-workflow',
+        { name: 'job', image: 'alpine', volumeMounts: CONTAINER_VOLUMES },
+        [{ name: 'redis', image: 'redis', volumeMounts: CONTAINER_VOLUMES }],
+        undefined,
+        undefined,
+        undefined,
+        mode
+      )
+    }
+
+    it('image: mounts the externals from the runner image, read-only, and copies nothing', async () => {
+      const pod = await podWith('image')
+      expect(pod.spec?.volumes?.find(v => v.name === 'externals')).toEqual({
+        name: 'externals',
+        image: { reference: 'registry.example/runner:1.2.3' }
+      })
+      for (const container of pod.spec?.containers ?? []) {
+        expect(
+          container.volumeMounts?.find(m => m.name === 'externals')
+        ).toEqual({
+          name: 'externals',
+          mountPath: '/__e',
+          subPath: 'home/runner/externals',
+          readOnly: true
+        })
+      }
+      const fsInit = pod.spec?.initContainers?.find(c => c.name === 'fs-init')
+      expect(fsInit?.image).toBe('registry.example/runner:1.2.3')
+      expect(fsInit?.command?.[2]).not.toContain('externals')
+      expect(fsInit?.volumeMounts?.map(m => m.name)).toEqual(['work', 'github'])
+    })
+
+    it('image: leaves the shared mount list alone', async () => {
+      await podWith('image')
+      expect(CONTAINER_VOLUMES.find(m => m.name === 'externals')).toEqual({
+        name: 'externals',
+        mountPath: '/__e'
+      })
+    })
+
+    it('copy: fs-init moves the externals into an emptyDir, as upstream', async () => {
+      const pod = await podWith('copy')
+      expect(pod.spec?.volumes?.find(v => v.name === 'externals')).toEqual({
+        name: 'externals',
+        emptyDir: {}
+      })
+      const fsInit = pod.spec?.initContainers?.find(c => c.name === 'fs-init')
+      expect(fsInit?.command?.[2]).toContain(
+        'mkdir -p /mnt/externals && mv /home/runner/externals/* /mnt/externals/'
+      )
+      expect(fsInit?.volumeMounts?.map(m => m.name)).toEqual([
+        'externals',
+        'work',
+        'github'
+      ])
+      expect(
+        pod.spec?.containers?.[0].volumeMounts?.find(
+          m => m.name === 'externals'
+        )
+      ).toEqual({ name: 'externals', mountPath: '/__e' })
+    })
   })
 })

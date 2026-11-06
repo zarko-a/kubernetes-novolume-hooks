@@ -58,7 +58,7 @@ describe('copyWorkToPod', () => {
     expect(mockExecListing).toHaveBeenCalledWith('pod', 'job', [
       'sh',
       '-c',
-      'cat /__e/.hook-work 2>/dev/null || true'
+      'cat /github/.hook-work 2>/dev/null || true'
     ])
     expect(mockExecCpToPod).not.toHaveBeenCalled()
     expect(mockWarning).not.toHaveBeenCalled()

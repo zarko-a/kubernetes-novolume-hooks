@@ -45,6 +45,12 @@ import {
 } from './pod-status'
 import type { HeartbeatWebSocket } from './heartbeat'
 import {
+  ExternalsMode,
+  externalsInitCommands,
+  externalsVolume,
+  mountExternalsFromImage
+} from './externals'
+import {
   WORK_TOKEN_ENV,
   WORK_URL_ENV,
   WorkDownload,
@@ -94,7 +100,8 @@ export async function createJobPod(
   services?: k8s.V1Container[],
   registry?: Registry,
   extension?: k8s.V1PodTemplateSpec,
-  workDownload?: WorkDownload
+  workDownload?: WorkDownload,
+  externals: ExternalsMode = 'copy'
 ): Promise<k8s.V1Pod> {
   const containers: k8s.V1Container[] = []
   if (jobContainer) {
@@ -103,6 +110,11 @@ export async function createJobPod(
   if (services?.length) {
     containers.push(...services)
   }
+  if (externals === 'image') {
+    mountExternalsFromImage(containers)
+  }
+  const runnerImage =
+    process.env.ACTIONS_RUNNER_IMAGE || 'ghcr.io/actions/actions-runner:latest'
 
   const appPod = new k8s.V1Pod()
 
@@ -133,10 +145,9 @@ export async function createJobPod(
     // Group-writable directories: fsGroup 1001 puts every container in group 1001, so a job
     // container running as any uid can write the workspace fs-init creates as uid 1001.
     'umask 0002',
-    'mkdir -p /mnt/externals',
     'mkdir -p /mnt/work',
     'mkdir -p /mnt/github',
-    'mv /home/runner/externals/* /mnt/externals/'
+    ...externalsInitCommands(externals)
   ]
 
   if (workingDirPath) {
@@ -151,9 +162,7 @@ export async function createJobPod(
   appPod.spec.initContainers = [
     {
       name: 'fs-init',
-      image:
-        process.env.ACTIONS_RUNNER_IMAGE ||
-        'ghcr.io/actions/actions-runner:latest',
+      image: runnerImage,
       command: ['sh', '-c', initCommands.join(' && ')],
       env: workDownload
         ? [
@@ -166,10 +175,9 @@ export async function createJobPod(
         runAsUser: 1001
       },
       volumeMounts: [
-        {
-          name: EXTERNALS_VOLUME_NAME,
-          mountPath: '/mnt/externals'
-        },
+        ...(externals === 'copy'
+          ? [{ name: EXTERNALS_VOLUME_NAME, mountPath: '/mnt/externals' }]
+          : []),
         {
           name: WORK_VOLUME,
           mountPath: '/mnt/work'
@@ -185,10 +193,7 @@ export async function createJobPod(
   appPod.spec.restartPolicy = 'Never'
 
   appPod.spec.volumes = [
-    {
-      name: EXTERNALS_VOLUME_NAME,
-      emptyDir: {}
-    },
+    externalsVolume(externals, runnerImage),
     {
       name: GITHUB_VOLUME_NAME,
       emptyDir: {}
