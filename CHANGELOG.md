@@ -13,6 +13,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - A `Dockerfile` that builds the hook bundle (npm as a non-root user, lockfile installs with
   install scripts disabled, registry signatures checked, no-cluster unit tests run) and drops
   it over `/home/runner/k8s-novolume/index.js` in a pinned `actions-runner` image.
+  The bundle builds once on the build host's platform, so a multi-arch image needs no npm
+  under emulation.
 
 ### Removed
 
