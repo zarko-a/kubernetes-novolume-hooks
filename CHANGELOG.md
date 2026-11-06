@@ -23,7 +23,9 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   read from the job container's env, then the runner's env.
 - When a step fails, the job pod's trouble is printed as errors: an OOM kill with the memory
   limit, an eviction, the pod gone, and the pod's events since the step started. A plain
-  failure, like a failing test, prints nothing extra.
+  failure, like a failing test, prints nothing extra. After a SIGKILL (exit 137) or a broken
+  session the pod is re-read for up to 15s, because the kubelet reports an OOM kill a few
+  seconds after the container dies; any failure in a step's copies is reported too.
 - Timing lines in the job log, prefixed `[custom-hook]`: job pod creation and time to
   Running, every copy to and from the job pod (files, bytes, transfer time, retries, and
   whether the hash check matched), the `_temp` merge, and the total time of `prepare_job` and

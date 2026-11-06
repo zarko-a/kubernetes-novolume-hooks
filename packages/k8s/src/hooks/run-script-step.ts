@@ -6,7 +6,8 @@ import {
   execCpFromPod,
   execCpToPod,
   execPodStep,
-  reportPodTrouble
+  reportPodTrouble,
+  troubleWaitMs
 } from '../k8s'
 import {
   formatError,
@@ -25,7 +26,22 @@ import {
   Stopwatch
 } from '../k8s/hook-log'
 
+// Any failure, in the step itself or in the copies around it (a step after an OOM kill fails
+// in its first exec with "container not found"), also prints what happened to the job pod.
 export async function runScriptStep(
+  args: RunScriptStepArgs,
+  state
+): Promise<void> {
+  const startedMs = Date.now()
+  try {
+    await runScriptStepInPod(args, state)
+  } catch (error) {
+    await reportPodTrouble(state.jobPod, startedMs, troubleWaitMs(error))
+    throw error
+  }
+}
+
+async function runScriptStepInPod(
   args: RunScriptStepArgs,
   state
 ): Promise<void> {
@@ -79,7 +95,6 @@ export async function runScriptStep(
   args.entryPoint = 'sh'
   args.entryPointArgs = ['-e', containerPath]
   const stepTimer = new Stopwatch()
-  const stepStartedMs = Date.now()
   let stepMs = 0
   try {
     await execPodStep(
@@ -90,7 +105,6 @@ export async function runScriptStep(
   } catch (err) {
     const message = formatError(err)
     core.debug(`execPodStep failed: ${message}`)
-    await reportPodTrouble(state.jobPod, stepStartedMs)
     throw new Error(`failed to run script step: ${message}`)
   } finally {
     stepMs = stepTimer.elapsedMs()

@@ -980,24 +980,47 @@ export async function waitForJobPodRunning(
   }
 }
 
+// How long to keep re-reading the pod after a failed step before concluding nothing
+// happened to it. The exec session breaks the moment the kernel kills the container (an OOM
+// kill takes the whole container on cgroup v2), but the kubelet reports it in the pod
+// status a few seconds later. A plain non-zero exit, like a failing test, needs no wait.
+export function troubleWaitMs(error: unknown): number {
+  const match = /exit code (\d+)/.exec(formatError(error))
+  if (match && match[1] !== '137') {
+    return 0
+  }
+  // SIGKILL (137), or the session broke without an exit code.
+  return 15000
+}
+
 // After a step failed: print, as errors, what happened to the job pod (OOM kill, eviction,
 // the pod gone) and the pod's events since the step started. A plain step failure, like a
 // failing test, changes nothing in the pod, so nothing is printed. Never throws.
 export async function reportPodTrouble(
   podName: string,
-  stepStartedMs: number
+  stepStartedMs: number,
+  waitMs = 0
 ): Promise<void> {
   try {
+    const timer = new Stopwatch()
     let pod: k8s.V1Pod
-    try {
-      pod = await getPodByName(podName)
-    } catch (error) {
-      if (apiErrorCode(error) === 404) {
-        core.error(`${HOOK_LOG_PREFIX} job pod ${podName} no longer exists`)
-      } else {
-        core.debug(`reading the job pod failed: ${formatError(error)}`)
+    let trouble: string[]
+    while (true) {
+      try {
+        pod = await getPodByName(podName)
+      } catch (error) {
+        if (apiErrorCode(error) === 404) {
+          core.error(`${HOOK_LOG_PREFIX} job pod ${podName} no longer exists`)
+        } else {
+          core.debug(`reading the job pod failed: ${formatError(error)}`)
+        }
+        return
       }
-      return
+      trouble = renderPodTrouble(pod)
+      if (trouble.length || timer.elapsedMs() >= waitMs) {
+        break
+      }
+      await sleep(1000)
     }
     let events: k8s.CoreV1Event[] = []
     if (pod.metadata?.uid) {
@@ -1010,7 +1033,7 @@ export async function reportPodTrouble(
         core.debug(`listing events failed: ${formatError(error)}`)
       }
     }
-    for (const line of [...renderPodTrouble(pod), ...events.map(renderEvent)]) {
+    for (const line of [...trouble, ...events.map(renderEvent)]) {
       core.error(`${HOOK_LOG_PREFIX} ${line}`)
     }
   } catch (error) {

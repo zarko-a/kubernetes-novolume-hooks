@@ -39,7 +39,11 @@ jest.mock('../src/k8s/utils', () => {
   }
 })
 
-import { reportPodTrouble, waitForJobPodRunning } from '../src/k8s'
+import {
+  reportPodTrouble,
+  troubleWaitMs,
+  waitForJobPodRunning
+} from '../src/k8s'
 
 const CREATED = Date.parse('2026-11-06T10:00:00Z')
 const at = (seconds: number): Date => new Date(CREATED + seconds * 1000)
@@ -243,6 +247,76 @@ describe('reportPodTrouble', () => {
     ])
   })
 
+  it('re-reads the pod until the kubelet reports the OOM kill', async () => {
+    let nowMs = at(100).getTime()
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => nowMs)
+    const { sleep } = jest.requireMock('../src/k8s/utils')
+    sleep.mockImplementation(async (ms: number) => {
+      nowMs += ms
+    })
+    const healthy = {
+      ...jobPod('Running', { running: {} }),
+      status: {
+        phase: 'Running',
+        containerStatuses: [
+          {
+            name: 'job',
+            image: 'j',
+            imageID: '',
+            ready: true,
+            restartCount: 0,
+            state: { running: {} }
+          }
+        ]
+      }
+    }
+    const reads = [
+      healthy,
+      healthy,
+      jobPod('Failed', { terminated: { exitCode: 137, reason: 'OOMKilled' } })
+    ]
+    mockReadNamespacedPod.mockImplementation(async () => reads.shift())
+
+    await reportPodTrouble('p', at(100).getTime(), 15000)
+
+    expect(mockReadNamespacedPod).toHaveBeenCalledTimes(3)
+    expect(mockError.mock.calls.map(call => call[0])).toContain(
+      '[custom-hook] job terminated OOMKilled, exit 137 (memory limit 5Gi)'
+    )
+    nowSpy.mockRestore()
+  })
+
+  it('stops re-reading after the wait when nothing happened to the pod', async () => {
+    let nowMs = at(100).getTime()
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => nowMs)
+    const { sleep } = jest.requireMock('../src/k8s/utils')
+    sleep.mockImplementation(async (ms: number) => {
+      nowMs += ms
+    })
+    mockReadNamespacedPod.mockResolvedValue({
+      ...jobPod('Running', { running: {} }),
+      status: {
+        phase: 'Running',
+        containerStatuses: [
+          {
+            name: 'job',
+            image: 'j',
+            imageID: '',
+            ready: true,
+            restartCount: 0,
+            state: { running: {} }
+          }
+        ]
+      }
+    })
+
+    await reportPodTrouble('p', at(100).getTime(), 15000)
+
+    expect(mockReadNamespacedPod).toHaveBeenCalledTimes(16)
+    expect(mockError).not.toHaveBeenCalled()
+    nowSpy.mockRestore()
+  })
+
   it('says when the pod is gone', async () => {
     mockReadNamespacedPod.mockRejectedValue(
       Object.assign(new Error('not found'), { code: 404 })
@@ -258,5 +332,29 @@ describe('reportPodTrouble', () => {
   it('never throws', async () => {
     mockReadNamespacedPod.mockRejectedValue(new Error('boom'))
     await expect(reportPodTrouble('p', 0)).resolves.toBeUndefined()
+  })
+})
+
+describe('troubleWaitMs', () => {
+  it.each([
+    [
+      'command terminated with non-zero exit code: command terminated with exit code 1',
+      0
+    ],
+    [
+      'command terminated with non-zero exit code: command terminated with exit code 2',
+      0
+    ],
+    [
+      'command terminated with non-zero exit code: command terminated with exit code 137',
+      15000
+    ],
+    [
+      'Internal error occurred: unable to upgrade connection: container not found ("job")',
+      15000
+    ],
+    ['WebSocket heartbeat timeout', 15000]
+  ])('%s -> %p', (message, expected) => {
+    expect(troubleWaitMs(new Error(message))).toBe(expected)
   })
 })
