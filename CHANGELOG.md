@@ -8,6 +8,12 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+### Added
+
+- A `Dockerfile` that builds the hook bundle (npm as a non-root user, lockfile installs with
+  install scripts disabled, registry signatures checked, no-cluster unit tests run) and drops
+  it over `/home/runner/k8s-novolume/index.js` in a pinned `actions-runner` image.
+
 ### Removed
 
 - The Docker hook (`packages/docker`), upstream's GitHub workflows and Dependabot configuration.
