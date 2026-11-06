@@ -258,6 +258,10 @@ export function readExtensionFromFile(): k8s.V1PodTemplateSpec | undefined {
   if (!filePath) {
     return undefined
   }
+  return readExtension(filePath)
+}
+
+export function readExtension(filePath: string): k8s.V1PodTemplateSpec {
   const doc = yaml.load(fs.readFileSync(filePath, 'utf8'))
   if (!doc || typeof doc !== 'object') {
     throw new Error(`Failed to parse ${filePath}`)

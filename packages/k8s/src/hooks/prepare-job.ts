@@ -25,7 +25,6 @@ import {
   formatError,
   generateContainerName,
   mergeContainerWithOptions,
-  readExtensionFromFile,
   fixArgs,
   prepareJobScript
 } from '../k8s/utils'
@@ -45,6 +44,7 @@ import {
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
 import { startReadAhead } from '../k8s/read-ahead'
 import { ExternalsMode, resolveExternals } from '../k8s/externals'
+import { JobSizeError, loadJobTemplate } from '../k8s/job-size'
 import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
@@ -65,6 +65,8 @@ export async function prepareJob(
     throw new Error('Job Container is required.')
   }
   const totalTimer = new Stopwatch()
+  // Before the read-ahead starts: a sizing error fails the job without leaving it running.
+  const extension = jobTemplate(args.container.environmentVariables)
   const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
   // First, so the reads overlap with creating the pod and waiting for it.
   const readAhead = startReadAhead(runnerWorkspace)
@@ -72,8 +74,6 @@ export async function prepareJob(
   void readAhead.finished.then(ms => (readAheadMs = ms))
 
   await prunePods()
-
-  const extension = readExtensionFromFile()
 
   let container: k8s.V1Container | undefined = undefined
   if (args.container?.image) {
@@ -159,6 +159,27 @@ export async function prepareJob(
       : `read-ahead of _work finished in ${formatSeconds(readAheadMs)}`
   )
   hookInfo(`prepare_job done in ${formatSeconds(totalTimer.elapsedMs())}`)
+}
+
+// The job pod's template: the runner's fixed one, or one built from the job's HOOK_JOB_*
+// values (see job-size.ts).
+function jobTemplate(
+  jobEnv: Record<string, string> | undefined
+): k8s.V1PodTemplateSpec | undefined {
+  try {
+    const { template, log } = loadJobTemplate(jobEnv, process.env)
+    if (log) {
+      hookInfo(log)
+    }
+    return template
+  } catch (error) {
+    if (error instanceof JobSizeError) {
+      throw new Error(
+        `${HOOK_LOG_PREFIX} cannot size the job pod: ${error.problems.join('; ')}`
+      )
+    }
+    throw error
+  }
 }
 
 export interface ServedWork {

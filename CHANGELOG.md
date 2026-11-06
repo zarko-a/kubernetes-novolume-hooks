@@ -10,6 +10,22 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- Per-job sizing: a job asks for its pod's size in the job container's env (`container.env`
+  in the workflow), so one runner scale set serves every size. `HOOK_JOB_MEMORY` (request and
+  limit, `Mi`/`Gi`) and `HOOK_JOB_CPU` (request, cores or millicores) are required;
+  `HOOK_JOB_DISK` (ephemeral-storage request), `HOOK_JOB_ARCH` (`amd64` by default, or
+  `arm64`) and `HOOK_JOB_PROFILE` (`standard` by default) are optional. The hook builds the
+  pod template from `profile-<profile>.yaml` in the runner's `HOOK_JOB_PROFILE_DIR`, sets the
+  job container's resources and the `kubernetes.io/arch` node selector, and annotates the pod
+  with the requested values (`custom-hook/memory`, `cpu`, `disk`, `arch`, `profile`). The
+  runner's env sets the limits: `HOOK_JOB_MAX_MEMORY` and `HOOK_JOB_MAX_CPU` (required),
+  `HOOK_JOB_MAX_DISK` (without it, `HOOK_JOB_DISK` is refused), `HOOK_JOB_CPU_LIMIT` (the job
+  container's CPU limit; none without it) and `HOOK_JOB_PROFILES` (allowed profiles,
+  comma-separated, `standard` by default). Values are parsed strictly and never rounded; a
+  malformed, missing or over-limit value fails the job before a pod is created, naming every
+  problem. A job that sets none of these uses the runner's fixed template
+  (`ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE`) as before; on a runner with
+  `HOOK_JOB_PROFILE_DIR` and no fixed template, it fails and names the variables to set.
 - The runner's externals (`/__e`: node20, node24 and their Alpine builds, ~600 MB) are mounted
   read-only from the runner image as an image volume, instead of `fs-init` copying them into
   an emptyDir for every job. The copy wrote ~600 MB to the node's root volume per job; with a
