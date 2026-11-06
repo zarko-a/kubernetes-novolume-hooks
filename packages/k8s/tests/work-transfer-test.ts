@@ -18,6 +18,7 @@ import {
   formatWorkTransfer,
   groupAccessible,
   parseWorkStatus,
+  resolveWorkTransfer,
   runnerPodIp,
   startWorkServer,
   streamTo,
@@ -102,6 +103,41 @@ describe('groupAccessible', () => {
   it('leaves other bits and a header without a mode alone', () => {
     expect(groupAccessible({ type: 'file', mode: 0o4600 }).mode).toBe(0o4660)
     expect(groupAccessible({ type: 'file' })).toEqual({ type: 'file' })
+  })
+})
+
+describe('resolveWorkTransfer', () => {
+  it('defaults to http', () => {
+    expect(resolveWorkTransfer(undefined, {})).toEqual({
+      mode: 'http',
+      source: 'default'
+    })
+    expect(resolveWorkTransfer({ HOOK_WORK_TRANSFER: '' }, {})).toEqual({
+      mode: 'http',
+      source: 'default'
+    })
+  })
+
+  it('takes the job container env first, then the runner env, in any case', () => {
+    expect(
+      resolveWorkTransfer(
+        { HOOK_WORK_TRANSFER: 'EXEC' },
+        { HOOK_WORK_TRANSFER: 'http' }
+      )
+    ).toEqual({ mode: 'exec', source: 'job container env' })
+    expect(resolveWorkTransfer({}, { HOOK_WORK_TRANSFER: ' exec ' })).toEqual({
+      mode: 'exec',
+      source: 'runner env'
+    })
+  })
+
+  it('warns and uses http for any other value', () => {
+    expect(resolveWorkTransfer({ HOOK_WORK_TRANSFER: 'ftp' }, {})).toEqual({
+      mode: 'http',
+      source: 'default',
+      warning:
+        'HOOK_WORK_TRANSFER from job container env is "ftp", not http or exec; using http'
+    })
   })
 })
 

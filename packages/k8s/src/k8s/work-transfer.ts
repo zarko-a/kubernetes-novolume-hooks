@@ -28,6 +28,47 @@ export const JOB_WORK_STATUS = '/__e/.hook-work'
 export const WORK_URL_ENV = 'HOOK_WORK_URL'
 export const WORK_TOKEN_ENV = 'HOOK_WORK_TOKEN'
 
+export const WORK_TRANSFER_ENV = 'HOOK_WORK_TRANSFER'
+
+export type WorkTransferMode = 'http' | 'exec'
+
+export interface WorkTransferSetting {
+  mode: WorkTransferMode
+  source: string
+  warning?: string
+}
+
+// HOOK_WORK_TRANSFER: `http` (default) or `exec`, from the job container's env, then the
+// runner's env. `exec` skips the HTTP attempt, for clusters where the job pod cannot reach
+// the runner pod (a NetworkPolicy, a firewall): there every job would otherwise wait for
+// curl's connect timeouts and retries before falling back.
+export function resolveWorkTransfer(
+  jobEnv: Record<string, string | undefined> | undefined,
+  runnerEnv: Record<string, string | undefined>
+): WorkTransferSetting {
+  let raw: string | undefined
+  let source = 'default'
+  if (jobEnv?.[WORK_TRANSFER_ENV]) {
+    raw = jobEnv[WORK_TRANSFER_ENV]
+    source = 'job container env'
+  } else if (runnerEnv[WORK_TRANSFER_ENV]) {
+    raw = runnerEnv[WORK_TRANSFER_ENV]
+    source = 'runner env'
+  }
+  if (raw === undefined) {
+    return { mode: 'http', source }
+  }
+  const value = raw.trim().toLowerCase()
+  if (value === 'http' || value === 'exec') {
+    return { mode: value, source }
+  }
+  return {
+    mode: 'http',
+    source: 'default',
+    warning: `${WORK_TRANSFER_ENV} from ${source} is "${raw}", not http or exec; using http`
+  }
+}
+
 export interface WorkDownload {
   url: string
   // Visible in the pod spec to anyone who can read pods in the namespace. It is only good

@@ -48,6 +48,7 @@ import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
   parseWorkStatus,
+  resolveWorkTransfer,
   runnerPodIp,
   startWorkServer,
   WorkServer,
@@ -115,7 +116,16 @@ export async function prepareJob(
     throw new Error('No containers exist, skipping hook invocation')
   }
 
-  const work = await serveWork(runnerWorkspace)
+  const transfer = resolveWorkTransfer(
+    args.container.environmentVariables,
+    process.env
+  )
+  if (transfer.warning) {
+    core.warning(`${HOOK_LOG_PREFIX} ${transfer.warning}`)
+  }
+  hookInfo(`work transfer ${transfer.mode} (${transfer.source})`)
+  const work =
+    transfer.mode === 'http' ? await serveWork(runnerWorkspace) : undefined
   try {
     await prepareJobPod(
       // Spelled out so the type carries the check above.

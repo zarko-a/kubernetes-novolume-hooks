@@ -24,6 +24,9 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   address. Files arrive owned by uid 1001 and group-writable, so non-root job containers can
   write them. If the download fails, or the IP is unknown, the hook warns and falls back to
   the exec copy. The `fs-init` image needs `curl`, which the `actions-runner` image has.
+  `HOOK_WORK_TRANSFER` (`http` by default, or `exec`, from the job container's env, then the
+  runner's env) turns the HTTP transfer off, for clusters where the job pod cannot reach the
+  runner pod.
 - Pod status in the job log while the job pod starts: every event about the pod (once each,
   again when an aggregated event repeats), the pod's phase, conditions and container states
   whenever they change, a heartbeat every 5 quiet seconds, and once Running, when each
