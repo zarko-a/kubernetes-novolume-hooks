@@ -38,7 +38,9 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - Copies fail fast instead of retrying silently. A copy command that exits non-zero (a failed
   `tar`) is a failed attempt and is retried; the error carries `tar`'s stderr, which is no
   longer discarded. Stderr from a successful copy is logged. The `chmod` after unpacking stays
-  best effort, because a non-root job container cannot chmod directories it does not own.
+  best effort, because a non-root job container cannot chmod directories it does not own. GNU
+  tar run by a non-root user exits non-zero when it cannot set the mode or times of such
+  directories, after unpacking every file; a failure with only those errors counts as success.
 - After each copy, the files on both sides are compared once, in parallel, instead of up to 15
   times with a second's sleep between tries. A mismatch, or a comparison that could not run, is
   a warning naming both file counts; the job continues, as it did after upstream's last retry.

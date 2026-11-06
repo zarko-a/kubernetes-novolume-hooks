@@ -161,9 +161,9 @@ describe('copy stats', () => {
 
     const script = (mockExec.mock.calls[0][3] as string[])[2]
     expect(script).toBe(
-      'tar xf - --no-same-owner -C /__w || exit 1; ' +
+      'tar xf - --no-same-owner -C /__w; status=$?; ' +
         'find /__w -type f -exec chmod u+rw {} + 2>/dev/null; ' +
-        'find /__w -type d -exec chmod u+rwx {} + 2>/dev/null; exit 0'
+        'find /__w -type d -exec chmod u+rwx {} + 2>/dev/null; exit $status'
     )
   })
 
@@ -235,6 +235,51 @@ describe('copy stats', () => {
     await expect(execCpToPod('pod', emptyDir, '/__w')).rejects.toThrow(
       `cpToPod failed after 30 attempts: copy ${emptyDir} to job pod /__w failed: ` +
         'command terminated with exit code 1; stderr: tar: invalid magic'
+    )
+  })
+
+  it("execCpToPod accepts GNU tar's directory metadata errors from a non-root user", async () => {
+    mockExec.mockImplementation(
+      pod({
+        copyStatuses: [
+          { status: 'Failure', message: 'command terminated with exit code 2' }
+        ],
+        // GNU tar 1.34, run as uid 101 into fs-init's directories (2026-11-06)
+        copyStderr: [
+          'tar: .: Cannot change mode to rwxrwxrwx: Operation not permitted',
+          'tar: ./repo: Cannot utime: Operation not permitted',
+          'tar: ./repo/repo: Cannot change mode to rwxrwxr-x: Operation not permitted',
+          'tar: Exiting with failure status due to previous errors',
+          ''
+        ].join('\n')
+      })
+    )
+
+    const stats = await execCpToPod('pod', emptyDir, '/__w')
+
+    expect(stats.transferAttempts).toBe(1)
+    expect(mockInfo).toHaveBeenCalledWith(
+      `[custom-hook] copy ${emptyDir} to job pod /__w: tar could not set the mode or ` +
+        'times of directories this user does not own; the files were copied'
+    )
+  })
+
+  it('execCpToPod still fails when tar reports anything else as well', async () => {
+    mockExec.mockImplementation(
+      pod({
+        copyStatuses: [
+          { status: 'Failure', message: 'command terminated with exit code 2' }
+        ],
+        copyStderr: [
+          'tar: ./repo: Cannot utime: Operation not permitted',
+          'tar: ./repo/file: Cannot open: Permission denied',
+          'tar: Exiting with failure status due to previous errors'
+        ].join('\n')
+      })
+    )
+
+    await expect(execCpToPod('pod', emptyDir, '/__w')).rejects.toThrow(
+      'Cannot open: Permission denied'
     )
   })
 

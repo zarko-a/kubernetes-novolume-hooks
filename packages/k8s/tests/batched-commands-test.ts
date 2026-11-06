@@ -19,7 +19,11 @@ jest.mock('@kubernetes/client-node', () => ({
   AuthorizationV1Api: class AuthorizationV1Api {}
 }))
 
-import { digestListing, extractToPodCommand } from '../src/k8s'
+import {
+  digestListing,
+  extractToPodCommand,
+  onlyDirectoryMetadataErrors
+} from '../src/k8s'
 
 // The shell commands below run for real with the container's `sh` and `find`. Each batched
 // command is compared with the per-file command it replaced, on the same files.
@@ -220,7 +224,7 @@ describe('batched shell commands', () => {
         )
       )
 
-      expect(result.status).toBe(1)
+      expect(result.status).not.toBe(0)
       expect(result.stderr).toMatch(/tar/)
     })
 
@@ -245,6 +249,28 @@ describe('batched shell commands', () => {
       expect(result.status).toBe(0)
       expect(result.stderr).toBe('')
       expect(snapshot(target)).toEqual(['x.txt: x'])
+    })
+  })
+
+  describe('onlyDirectoryMetadataErrors', () => {
+    it.each([
+      ['tar: .: Cannot utime: Operation not permitted\n', true],
+      [
+        'tar: ./a: Cannot change mode to rwxr-xr-x: Operation not permitted\n' +
+          'tar: Exiting with failure status due to previous errors\n',
+        true
+      ],
+      ['', false],
+      ['tar: Exiting with failure status due to previous errors\n', true],
+      ['tar: ./f: Cannot open: Permission denied\n', false],
+      ['tar: This does not look like a tar archive\n', false],
+      [
+        'tar: .: Cannot utime: Operation not permitted\n' +
+          'tar: ./x: Cannot write: No space left on device\n',
+        false
+      ]
+    ])('%j -> %p', (stderr, expected) => {
+      expect(onlyDirectoryMetadataErrors(stderr)).toBe(expected)
     })
   })
 

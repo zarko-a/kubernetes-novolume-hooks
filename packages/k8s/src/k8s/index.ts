@@ -510,9 +510,32 @@ async function verifyCopy(
   }
 }
 
+// GNU tar run by a non-root job container cannot set the mode or times of directories it
+// does not own (`/__w` itself, fs-init's workspace directory). It unpacks every file, then
+// exits non-zero. Upstream discarded tar's status and stderr, so such containers work today;
+// a failure whose stderr has only these errors is a success. Busybox tar does not report them.
+const DIRECTORY_METADATA_ERRORS = [
+  /: Cannot utime: Operation not permitted$/,
+  /: Cannot change mode to \S+: Operation not permitted$/,
+  /^tar: Exiting with failure status due to previous errors$/
+]
+
+export function onlyDirectoryMetadataErrors(stderr: string): boolean {
+  const lines = stderr
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+  return (
+    lines.length > 0 &&
+    lines.every(line =>
+      DIRECTORY_METADATA_ERRORS.some(pattern => pattern.test(line))
+    )
+  )
+}
+
 // Resolves when an exec'd copy command exits 0. A non-zero exit rejects with the command's
-// stderr, so the caller retries the copy. Stderr from a successful command (tar warnings)
-// is logged, not treated as a failure.
+// stderr, so the caller retries the copy, unless the only errors are tar's directory
+// metadata errors (see above). Stderr from a successful command is logged.
 function settleCopyExec(
   description: string,
   errStream: WritableStreamBuffer,
@@ -523,6 +546,14 @@ function settleCopyExec(
     const stderr = errStream.size()
       ? (errStream.getContentsAsString() || '').trim()
       : ''
+    if (status.status !== 'Success' && onlyDirectoryMetadataErrors(stderr)) {
+      hookInfo(
+        `${description}: tar could not set the mode or times of directories this user ` +
+          'does not own; the files were copied'
+      )
+      resolve(status)
+      return
+    }
     if (status.status !== 'Success') {
       reject(
         new Error(
@@ -539,18 +570,18 @@ function settleCopyExec(
   }
 }
 
-// Shell command that unpacks the tar stream on stdin into containerPath, then makes files
-// and directories writable by the job container's user. A tar failure fails the command,
-// with tar's stderr. The chmods are best effort on purpose: a non-root job container cannot
+// Shell command that unpacks the tar stream on stdin into containerPath, makes files and
+// directories writable by the job container's user, and exits with tar's status (tar's
+// stderr is kept). The chmods are best effort on purpose: a non-root job container cannot
 // chmod directories it does not own (`/__w` itself, fs-init's workspace directory), and
 // failing on that would break jobs that work today.
 export function extractToPodCommand(containerPath: string): string {
   const target = shlex.quote(containerPath)
   return (
-    `tar xf - --no-same-owner -C ${target} || exit 1; ` +
+    `tar xf - --no-same-owner -C ${target}; status=$?; ` +
     `find ${target} -type f -exec chmod u+rw {} + 2>/dev/null; ` +
     `find ${target} -type d -exec chmod u+rwx {} + 2>/dev/null; ` +
-    'exit 0'
+    'exit $status'
   )
 }
 
