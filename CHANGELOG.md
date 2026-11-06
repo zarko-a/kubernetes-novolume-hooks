@@ -42,6 +42,10 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- A copy from the job pod returns only after every file is written on the runner. It returned
+  when the exec's status arrived, while tar-fs could still be writing, so the runner could read
+  incomplete step outputs. Upstream's 15 silent hash retries hid the race; comparing once
+  exposed it.
 - Job containers that run as a non-root user other than 1001 can write the workspace: `fs-init`
   creates its directories group-writable (`umask 0002`), and `fsGroup: 1001` puts every
   container in that group. Checkout used to fail with `EACCES`.

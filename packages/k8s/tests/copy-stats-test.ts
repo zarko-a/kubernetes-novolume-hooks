@@ -50,7 +50,7 @@ jest.mock('../src/k8s/utils', () => {
   }
 })
 
-import { execCpFromPod, execCpToPod } from '../src/k8s'
+import { execCpFromPod, execCpToPod, waitForFinish } from '../src/k8s'
 
 type Header = { type: string; size: number }
 const HEADERS: Header[] = [
@@ -109,6 +109,8 @@ function pod(behaviour: PodBehaviour) {
     if (behaviour.copyStderr) {
       stderr?.write(behaviour.copyStderr)
     }
+    // As @kubernetes/client-node does when the status arrives: end the caller's streams.
+    stdout?.end()
     callback(status)
     return undefined
   }
@@ -317,6 +319,42 @@ describe('copy stats', () => {
     expect(mockExtract).toHaveBeenCalledWith(
       emptyDir,
       expect.objectContaining({ map: expect.any(Function) })
+    )
+  })
+
+  it('execCpFromPod returns only after tar-fs has written everything', async () => {
+    mockExec.mockImplementation(pod({}))
+    fs.mkdirSync(path.join(emptyDir, '_runner_file_commands'))
+    let written = false
+    mockExtract.mockImplementation(
+      (_dir: string, options?: { map?: (h: Header) => Header }) => {
+        tarWithHeaders(_dir, options)
+        // Finishes 50ms after end(), like tar-fs closing its last file.
+        return new Writable({
+          write: (_c, _e, cb) => cb(),
+          final: cb =>
+            setTimeout(() => {
+              written = true
+              cb()
+            }, 50)
+        })
+      }
+    )
+
+    await execCpFromPod('pod', '/__w/_temp/_runner_file_commands', emptyDir)
+
+    expect(written).toBe(true)
+  })
+
+  it('waitForFinish rejects when the stream errors or never finishes', async () => {
+    const { EventEmitter } = await import('events')
+    const erroring = new EventEmitter()
+    const failed = waitForFinish(erroring, 1000)
+    erroring.emit('error', new Error('disk full'))
+    await expect(failed).rejects.toThrow('disk full')
+
+    await expect(waitForFinish(new EventEmitter(), 20)).rejects.toThrow(
+      'extracting did not finish in 0.02s'
     )
   })
 

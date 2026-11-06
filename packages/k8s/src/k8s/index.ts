@@ -4,6 +4,7 @@ import { spawn } from 'child_process'
 import * as k8s from '@kubernetes/client-node'
 import tar from 'tar-fs'
 import * as stream from 'stream'
+import type { EventEmitter } from 'events'
 import { WritableStreamBuffer } from 'stream-buffers'
 import { createHash } from 'crypto'
 import type { ContainerInfo, Registry } from 'hooklib'
@@ -581,6 +582,33 @@ function settleCopyExec(
   }
 }
 
+const EXTRACT_FINISH_TIMEOUT_MS = 60000
+
+// Resolves when a writable stream has emitted `finish`, rejects on `error` or after the
+// timeout, so a stream that never finishes becomes a failed attempt instead of a hang.
+export async function waitForFinish(
+  writable: EventEmitter,
+  timeoutMs: number
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(new Error(`extracting did not finish in ${timeoutMs / 1000}s`)),
+      timeoutMs
+    )
+    // A failed attempt's timer must not keep the hook process alive.
+    timer.unref()
+    writable.on('finish', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    writable.on('error', (error: Error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+  })
+}
+
 // Shell command that unpacks the tar stream on stdin into containerPath, makes files and
 // directories writable by the job container's user, and exits with tar's status (tar's
 // stderr is kept). The chmods are best effort on purpose: a non-root job container cannot
@@ -693,6 +721,13 @@ export async function execCpFromPod(
       counter = new TarEntryCounter()
       const writerStream = tar.extract(parentRunnerPath, { map: counter.map })
       const errStream = new WritableStreamBuffer()
+      // The exec's status arrives as soon as tar in the pod exits, while tar-fs may still be
+      // writing what it received. Wait for tar-fs to finish too, or the runner reads files
+      // (step outputs) that are not complete yet. Upstream's 15 hash retries hid this race.
+      const extracted = waitForFinish(writerStream, EXTRACT_FINISH_TIMEOUT_MS)
+      // Awaited below once the exec succeeded; when the exec fails first, nobody awaits it,
+      // and an unhandled rejection would crash the hook.
+      extracted.catch(() => undefined)
 
       await new Promise((resolve, reject) => {
         exec
@@ -709,6 +744,7 @@ export async function execCpFromPod(
           )
           .catch(e => reject(e))
       })
+      await extracted
       break
     } catch (error) {
       core.debug(`Attempt ${attempt + 1} failed: ${error}`)
