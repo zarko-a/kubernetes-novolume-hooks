@@ -10,6 +10,11 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- `prepare_job` reads `_work` into the runner pod's page cache as soon as it starts, with 32
+  readers in parallel, so the copy to the job pod does not read the files from disk one at a
+  time. The runner's freshly downloaded actions were often not cached: packing 11.6k files
+  took 11-13s from disk and 1.4s from the cache. The read-ahead stops when the copy is done,
+  and never fails the job.
 - The job pod's `fs-init` container downloads `_work` straight from the hook over HTTP, so
   `prepare_job` no longer streams it through the API server and the kubelet after the pod is
   Running. The hook serves a tar of `_work` on an ephemeral port for the length of

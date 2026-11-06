@@ -43,6 +43,7 @@ import {
   Stopwatch
 } from '../k8s/hook-log'
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
+import { startReadAhead } from '../k8s/read-ahead'
 import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
@@ -62,6 +63,11 @@ export async function prepareJob(
     throw new Error('Job Container is required.')
   }
   const totalTimer = new Stopwatch()
+  const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
+  // First, so the reads overlap with creating the pod and waiting for it.
+  const readAhead = startReadAhead(runnerWorkspace)
+  let readAheadMs: number | undefined
+  void readAhead.finished.then(ms => (readAheadMs = ms))
 
   await prunePods()
 
@@ -109,7 +115,6 @@ export async function prepareJob(
     throw new Error('No containers exist, skipping hook invocation')
   }
 
-  const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
   const work = await serveWork(runnerWorkspace)
   try {
     await prepareJobPod(
@@ -124,8 +129,14 @@ export async function prepareJob(
       work
     )
   } finally {
+    readAhead.stop()
     await work?.server.close()
   }
+  hookInfo(
+    readAheadMs === undefined
+      ? 'read-ahead of _work was still running when the copy finished'
+      : `read-ahead of _work finished in ${formatSeconds(readAheadMs)}`
+  )
   hookInfo(`prepare_job done in ${formatSeconds(totalTimer.elapsedMs())}`)
 }
 
