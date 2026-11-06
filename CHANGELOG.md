@@ -15,6 +15,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   it over `/home/runner/k8s-novolume/index.js` in a pinned `actions-runner` image.
   The bundle builds once on the build host's platform, so a multi-arch image needs no npm
   under emulation.
+- `scripts/container-npm.sh`, which runs npm and npx in the builder image as the calling user,
+  with only the repository mounted and install scripts disabled.
 
 ### Removed
 
