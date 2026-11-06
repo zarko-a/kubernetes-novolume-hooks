@@ -43,7 +43,6 @@ import {
   Stopwatch
 } from '../k8s/hook-log'
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
-import { packDiagnostic } from '../k8s/pack-diagnostic'
 import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
@@ -111,7 +110,6 @@ export async function prepareJob(
   }
 
   const runnerWorkspace = dirname(process.env.RUNNER_WORKSPACE as string)
-  await packDiagnostic(runnerWorkspace)
   const work = await serveWork(runnerWorkspace)
   try {
     await prepareJobPod(
