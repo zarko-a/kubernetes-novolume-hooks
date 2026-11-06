@@ -1,30 +1,30 @@
 {
   "name": "hooks",
   "version": "0.8.1",
-  "description": "Three projects are included - k8s: a kubernetes hook implementation that spins up pods dynamically to run a job - docker: A hook implementation of the runner's docker implementation  - A hook lib, which contains shared typescript definitions and utilities that the other packages consume",
+  "description": "Container hooks for actions-runner-controller's kubernetes-novolume mode: k8s (the hook) and hooklib (shared types and utilities)",
   "main": "",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "npm run test --prefix packages/docker && npm run test --prefix packages/k8s",
-    "bootstrap": "npm ci --prefix packages/hooklib && npm ci --prefix packages/k8s && npm ci --prefix packages/docker",
+    "test": "npm run test --prefix packages/k8s",
+    "bootstrap": "npm ci --ignore-scripts --prefix packages/hooklib && npm ci --ignore-scripts --prefix packages/k8s",
     "format": "prettier --write '**/*.ts'",
     "format-check": "prettier --check '**/*.ts'",
     "lint": "eslint packages/**/*.ts",
     "lint:fix": "eslint packages/**/*.ts --fix",
-    "build-all": "npm run build --prefix packages/hooklib && npm run build --prefix packages/k8s && npm run build --prefix packages/docker"
+    "build-all": "npm run build --prefix packages/hooklib && npm run build --prefix packages/k8s"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/actions/runner-container-hooks.git"
+    "url": "git+https://github.com/zarko-a/kubernetes-novolume-hooks.git"
   },
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/actions/runner-container-hooks/issues"
+    "url": "https://github.com/zarko-a/kubernetes-novolume-hooks/issues"
   },
-  "homepage": "https://github.com/actions/runner-container-hooks#readme",
+  "homepage": "https://github.com/zarko-a/kubernetes-novolume-hooks#readme",
   "devDependencies": {
     "@eslint/js": "^9.31.0",
     "@types/jest": "^30.0.0",
