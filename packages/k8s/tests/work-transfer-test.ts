@@ -4,6 +4,7 @@ import * as http from 'http'
 import type { AddressInfo } from 'net'
 import * as os from 'os'
 import * as path from 'path'
+import { Readable } from 'stream'
 import { promisify } from 'util'
 
 jest.mock('@actions/core', () => ({
@@ -19,6 +20,7 @@ import {
   parseWorkStatus,
   runnerPodIp,
   startWorkServer,
+  streamTo,
   WorkServer,
   workDownloadScript,
   workUrl
@@ -174,15 +176,98 @@ describe('formatWorkTransfer', () => {
       completed: true,
       files: 11607,
       bytes: 193776844,
-      serveMs: 3060
+      serveMs: 3060,
+      receiverMs: 2510
     }
     expect(formatWorkTransfer(stats, 3420)).toBe(
-      'copy _work to job pod over HTTP: 11607 files, 184.8 MiB served in 3.1s; ' +
-        'fs-init download and unpack 3.4s'
+      'copy _work to job pod over HTTP: 11607 files, 184.8 MiB served in 3.1s ' +
+        '(2.5s of it waiting on the job pod); fs-init download and unpack 3.4s'
     )
     expect(formatWorkTransfer({ ...stats, requests: 2 }, 3420)).toContain(
-      'served in 3.1s (2 requests);'
+      'waiting on the job pod) (2 requests);'
     )
+  })
+})
+
+describe('streamTo', () => {
+  // Serves one request with streamTo(source()), and has the client read the response after
+  // waiting clientDelayMs. Returns the measured receiver time and the bytes received.
+  async function serve(
+    source: () => Readable,
+    clientDelayMs: number
+  ): Promise<{ receiverMs: number; received: number }> {
+    let measured: Promise<{ receiverMs: number }> | undefined
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200)
+      measured = streamTo(source(), response)
+    })
+    await new Promise<void>(resolve => server.listen(0, resolve))
+    try {
+      const port = (server.address() as AddressInfo).port
+      const received = await new Promise<number>((resolve, reject) => {
+        http
+          .get(`http://127.0.0.1:${port}/`, response => {
+            response.pause()
+            let bytes = 0
+            setTimeout(() => {
+              response.on('data', chunk => (bytes += chunk.length))
+              response.on('end', () => resolve(bytes))
+              response.resume()
+            }, clientDelayMs)
+          })
+          .on('error', reject)
+      })
+      const { receiverMs } = await (measured as Promise<{ receiverMs: number }>)
+      return { receiverMs, received }
+    } finally {
+      server.closeAllConnections()
+      await new Promise(resolve => server.close(resolve))
+    }
+  }
+
+  it('counts the time a slow receiver holds the stream up', async () => {
+    const data = Buffer.alloc(32 * 1024 * 1024, 1)
+    const result = await serve(() => Readable.from([data]), 400)
+    expect(result.received).toBe(data.length)
+    expect(result.receiverMs).toBeGreaterThanOrEqual(300)
+  })
+
+  it('does not count the time spent waiting for a slow source', async () => {
+    async function* slow(): AsyncGenerator<Buffer> {
+      for (let i = 0; i < 4; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        yield Buffer.alloc(1024, 1)
+      }
+    }
+    const result = await serve(() => Readable.from(slow()), 0)
+    expect(result.received).toBe(4096)
+    expect(result.receiverMs).toBeLessThan(100)
+  })
+
+  it('rejects when the source fails', async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200)
+      const failing = new Readable({
+        read() {
+          this.destroy(new Error('disk read failed'))
+        }
+      })
+      streamTo(failing, response).catch(error => {
+        server.emit('streamError', error)
+      })
+    })
+    const failed = new Promise<Error>(resolve =>
+      server.once('streamError', resolve)
+    )
+    await new Promise<void>(resolve => server.listen(0, resolve))
+    try {
+      const port = (server.address() as AddressInfo).port
+      http.get(`http://127.0.0.1:${port}/`).on('error', () => undefined)
+      expect((await failed).message).toBe('disk read failed')
+    } finally {
+      server.closeAllConnections()
+      await new Promise(resolve => server.close(resolve))
+    }
   })
 })
 

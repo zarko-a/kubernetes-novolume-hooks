@@ -4,7 +4,6 @@ import * as fs from 'fs'
 import * as http from 'http'
 import type { AddressInfo } from 'net'
 import * as os from 'os'
-import { pipeline } from 'stream/promises'
 import tar from 'tar-fs'
 import {
   formatBytes,
@@ -43,7 +42,56 @@ export interface WorkServeStats {
   files: number
   bytes: number
   serveMs: number
+  // Part of serveMs spent waiting for the job pod to take more data (the network and
+  // fs-init's tar). The rest was spent waiting for the packer (disk reads on the runner).
+  receiverMs: number
   error?: string
+}
+
+interface PackStream {
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown
+  once(event: 'end', listener: () => void): unknown
+  once(event: 'error', listener: (error: Error) => void): unknown
+  pause(): unknown
+  resume(): unknown
+  destroy(): unknown
+}
+
+// Streams source into response like pipeline(), and measures how long writes waited for the
+// response to drain: that is the receiver's share of the transfer time.
+export async function streamTo(
+  source: PackStream,
+  response: http.ServerResponse
+): Promise<{ receiverMs: number }> {
+  return new Promise((resolve, reject) => {
+    let receiverMs = 0
+    source.on('data', chunk => {
+      if (!response.write(chunk)) {
+        source.pause()
+        const waitTimer = new Stopwatch()
+        response.once('drain', () => {
+          receiverMs += waitTimer.elapsedMs()
+          source.resume()
+        })
+      }
+    })
+    source.once('end', () => {
+      const endTimer = new Stopwatch()
+      response.end(() =>
+        resolve({ receiverMs: receiverMs + endTimer.elapsedMs() })
+      )
+    })
+    source.once('error', error => {
+      response.destroy(error)
+      reject(error)
+    })
+    response.once('close', () => {
+      if (!response.writableFinished) {
+        source.destroy()
+        reject(new Error('the job pod closed the connection'))
+      }
+    })
+  })
 }
 
 // tar-fs packs each file with the runner's mode masked by the runner's umask, and fs-init
@@ -87,7 +135,8 @@ export async function startWorkServer(root: string): Promise<WorkServer> {
     completed: false,
     files: 0,
     bytes: 0,
-    serveMs: 0
+    serveMs: 0,
+    receiverMs: 0
   }
 
   const server = http.createServer((request, response) => {
@@ -107,7 +156,7 @@ export async function startWorkServer(root: string): Promise<WorkServer> {
 
     const timer = new Stopwatch()
     const counter = new TarEntryCounter()
-    let pack: NodeJS.ReadableStream
+    let pack: PackStream
     try {
       pack = tar.pack(root, {
         entries: rootEntries(root),
@@ -120,12 +169,13 @@ export async function startWorkServer(root: string): Promise<WorkServer> {
       return
     }
     response.writeHead(200, { 'Content-Type': 'application/x-tar' })
-    pipeline(pack, response).then(
-      () => {
+    streamTo(pack, response).then(
+      ({ receiverMs }) => {
         stats.completed = true
         stats.files = counter.files
         stats.bytes = counter.bytes
         stats.serveMs = timer.elapsedMs()
+        stats.receiverMs = receiverMs
         stats.error = undefined
       },
       error => {
@@ -157,8 +207,8 @@ export async function startWorkServer(root: string): Promise<WorkServer> {
 // The runner pod's IP: ACTIONS_RUNNER_POD_IP (downward API, status.podIP) if set, otherwise
 // the first non-internal IPv4 address of this container.
 export function runnerPodIp(
-  env: NodeJS.ProcessEnv,
-  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()
+  env: Record<string, string | undefined>,
+  interfaces: ReturnType<typeof os.networkInterfaces> = os.networkInterfaces()
 ): string | undefined {
   const fromEnv = env.ACTIONS_RUNNER_POD_IP?.trim()
   if (fromEnv) {
@@ -232,7 +282,8 @@ export function formatWorkTransfer(
   const requests = stats.requests > 1 ? ` (${stats.requests} requests)` : ''
   return (
     `copy _work to job pod over HTTP: ${stats.files} files, ${formatBytes(stats.bytes)} ` +
-    `served in ${formatSeconds(stats.serveMs)}${requests}; fs-init download and unpack ` +
+    `served in ${formatSeconds(stats.serveMs)} (${formatSeconds(stats.receiverMs)} of it ` +
+    `waiting on the job pod)${requests}; fs-init download and unpack ` +
     `${formatSeconds(downloadMs)}`
   )
 }

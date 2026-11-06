@@ -37,7 +37,8 @@ function served(): ServedWork {
         completed: true,
         files: 11607,
         bytes: 193776844,
-        serveMs: 3060
+        serveMs: 3060,
+        receiverMs: 2510
       },
       close: jest.fn()
     }
@@ -63,7 +64,7 @@ describe('copyWorkToPod', () => {
     expect(mockWarning).not.toHaveBeenCalled()
     expect(mockInfo).toHaveBeenCalledWith(
       '[custom-hook] copy _work to job pod over HTTP: 11607 files, 184.8 MiB served in ' +
-        '3.1s; fs-init download and unpack 3.4s'
+        '3.1s (2.5s of it waiting on the job pod); fs-init download and unpack 3.4s'
     )
   })
 
