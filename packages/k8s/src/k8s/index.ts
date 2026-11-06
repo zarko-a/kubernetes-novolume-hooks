@@ -26,6 +26,7 @@ import {
 } from './utils'
 import * as shlex from 'shlex'
 import { parsePositiveMsEnv, WebSocketHeartbeat } from './heartbeat'
+import { CopyStats, Stopwatch, TarEntryCounter } from './hook-log'
 import type { HeartbeatWebSocket } from './heartbeat'
 
 const kc = new k8s.KubeConfig()
@@ -470,9 +471,11 @@ export async function execCpToPod(
   podName: string,
   runnerPath: string,
   containerPath: string
-): Promise<void> {
+): Promise<CopyStats> {
   core.debug(`Copying ${runnerPath} to pod ${podName} at ${containerPath}`)
 
+  const transferTimer = new Stopwatch()
+  let counter = new TarEntryCounter()
   let attempt = 0
   while (true) {
     try {
@@ -486,7 +489,8 @@ export async function execCpToPod(
           `find ${shlex.quote(containerPath)} -type f -exec chmod u+rw {} \\; 2>/dev/null; ` +
           `find ${shlex.quote(containerPath)} -type d -exec chmod u+rwx {} \\; 2>/dev/null`
       ]
-      const readStream = tar.pack(runnerPath)
+      counter = new TarEntryCounter()
+      const readStream = tar.pack(runnerPath, { map: counter.map })
       const errStream = new WritableStreamBuffer()
       await new Promise((resolve, reject) => {
         exec
@@ -524,10 +528,15 @@ export async function execCpToPod(
       await sleep(1000)
     }
   }
+  const transferMs = transferTimer.elapsedMs()
 
+  const verifyTimer = new Stopwatch()
+  let verified = false
+  let verifyAttempts = 0
   let attempts = 15
   const delay = 1000
   for (let i = 0; i < attempts; i++) {
+    verifyAttempts = i + 1
     try {
       const want = await localCalculateOutputHashSorted([
         'sh',
@@ -549,11 +558,22 @@ export async function execCpToPod(
         continue
       }
 
+      verified = true
       break
     } catch (error) {
       core.debug(`Attempt ${i + 1} failed: ${error}`)
       await sleep(delay)
     }
+  }
+
+  return {
+    files: counter.files,
+    bytes: counter.bytes,
+    transferAttempts: attempt + 1,
+    transferMs,
+    verifyAttempts,
+    verified,
+    verifyMs: verifyTimer.elapsedMs()
   }
 }
 
@@ -561,12 +581,14 @@ export async function execCpFromPod(
   podName: string,
   containerPath: string,
   parentRunnerPath: string
-): Promise<void> {
+): Promise<CopyStats> {
   const targetRunnerPath = `${parentRunnerPath}/${path.basename(containerPath)}`
   core.debug(
     `Copying from pod ${podName} ${containerPath} to ${targetRunnerPath}`
   )
 
+  const transferTimer = new Stopwatch()
+  let counter = new TarEntryCounter()
   let attempt = 0
   while (true) {
     try {
@@ -582,7 +604,8 @@ export async function execCpFromPod(
         containerPaths.join('/') || '/',
         dirname
       ]
-      const writerStream = tar.extract(parentRunnerPath)
+      counter = new TarEntryCounter()
+      const writerStream = tar.extract(parentRunnerPath, { map: counter.map })
       const errStream = new WritableStreamBuffer()
 
       await new Promise((resolve, reject) => {
@@ -621,10 +644,15 @@ export async function execCpFromPod(
       await sleep(1000)
     }
   }
+  const transferMs = transferTimer.elapsedMs()
 
+  const verifyTimer = new Stopwatch()
+  let verified = false
+  let verifyAttempts = 0
   let attempts = 15
   const delay = 1000
   for (let i = 0; i < attempts; i++) {
+    verifyAttempts = i + 1
     try {
       const want = await execCalculateOutputHashSorted(
         podName,
@@ -646,11 +674,22 @@ export async function execCpFromPod(
         continue
       }
 
+      verified = true
       break
     } catch (error) {
       core.debug(`Attempt ${i + 1} failed: ${error}`)
       await sleep(delay)
     }
+  }
+
+  return {
+    files: counter.files,
+    bytes: counter.bytes,
+    transferAttempts: attempt + 1,
+    transferMs,
+    verifyAttempts,
+    verified,
+    verifyMs: verifyTimer.elapsedMs()
   }
 }
 

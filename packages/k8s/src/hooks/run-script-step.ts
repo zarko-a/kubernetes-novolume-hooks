@@ -12,11 +12,18 @@ import {
 import { JOB_CONTAINER_NAME } from './constants'
 import { dirname } from 'path'
 import * as shlex from 'shlex'
+import {
+  formatCopyStats,
+  formatSeconds,
+  hookInfo,
+  Stopwatch
+} from '../k8s/hook-log'
 
 export async function runScriptStep(
   args: RunScriptStepArgs,
   state
 ): Promise<void> {
+  const totalTimer = new Stopwatch()
   // Write the entrypoint first. This will be later coppied to the workflow pod
   const { entryPoint, entryPointArgs, environmentVariables } = args
   const { containerPath, runnerPath } = writeRunScript(
@@ -41,7 +48,12 @@ export async function runScriptStep(
     state.jobPod,
     JOB_CONTAINER_NAME
   )
-  await execCpToPod(state.jobPod, runnerTemp, containerTempSrc)
+  const tempStats = await execCpToPod(
+    state.jobPod,
+    runnerTemp,
+    containerTempSrc
+  )
+  hookInfo(formatCopyStats('copy _temp to job pod', tempStats))
 
   // Copy GitHub directories from temp to /github
   // Merge strategy:
@@ -64,6 +76,7 @@ export async function runScriptStep(
     'rm -rf /__w/_temp_pre'
   ]
 
+  const mergeTimer = new Stopwatch()
   try {
     await execPodStep(
       ['sh', '-c', mergeCommands.join(' && ')],
@@ -75,10 +88,13 @@ export async function runScriptStep(
     core.debug(`Failed to merge temp directories: ${message}`)
     throw new Error(`failed to merge temp dirs: ${message}`)
   }
+  hookInfo(`merge _temp in job pod: ${formatSeconds(mergeTimer.elapsedMs())}`)
 
   // Execute the entrypoint script
   args.entryPoint = 'sh'
   args.entryPointArgs = ['-e', containerPath]
+  const stepTimer = new Stopwatch()
+  let stepMs = 0
   try {
     await execPodStep(
       [args.entryPoint, ...args.entryPointArgs],
@@ -90,6 +106,7 @@ export async function runScriptStep(
     core.debug(`execPodStep failed: ${message}`)
     throw new Error(`failed to run script step: ${message}`)
   } finally {
+    stepMs = stepTimer.elapsedMs()
     try {
       fs.rmSync(runnerPath, { force: true })
     } catch (removeErr) {
@@ -101,12 +118,20 @@ export async function runScriptStep(
     core.debug(
       `Copying from job pod '${state.jobPod}' ${containerTemp} to ${runnerTemp}`
     )
-    await execCpFromPod(
+    const commandStats = await execCpFromPod(
       state.jobPod,
       `${containerTemp}/_runner_file_commands`,
       `${workdir}/_temp`
     )
+    hookInfo(
+      formatCopyStats('copy _runner_file_commands from job pod', commandStats)
+    )
   } catch (error) {
     core.warning('Failed to copy _temp from pod')
   }
+  const totalMs = totalTimer.elapsedMs()
+  hookInfo(
+    `run_script_step overhead ${formatSeconds(totalMs - stepMs)} ` +
+      `(script ${formatSeconds(stepMs)}, total ${formatSeconds(totalMs)})`
+  )
 }

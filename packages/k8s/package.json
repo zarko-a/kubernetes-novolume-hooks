@@ -5,6 +5,7 @@
   "main": "lib/index.js",
   "scripts": {
     "test": "jest --runInBand",
+    "test:unit": "jest --ci --testPathIgnorePatterns '/tests/(cleanup-job|e2e|k8s-utils|prepare-job|run-container-step|run-script-step)-test\\.ts$'",
     "build": "tsc && npx ncc build",
     "format": "prettier --write '**/*.ts'",
     "format-check": "prettier --check '**/*.ts'",

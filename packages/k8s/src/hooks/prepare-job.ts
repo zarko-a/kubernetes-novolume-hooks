@@ -35,6 +35,12 @@ import {
   JOB_CONTAINER_NAME
 } from './constants'
 import { dirname } from 'path'
+import {
+  formatCopyStats,
+  formatSeconds,
+  hookInfo,
+  Stopwatch
+} from '../k8s/hook-log'
 
 export async function prepareJob(
   args: PrepareJobArgs,
@@ -43,6 +49,7 @@ export async function prepareJob(
   if (!args.container) {
     throw new Error('Job Container is required.')
   }
+  const totalTimer = new Stopwatch()
 
   await prunePods()
 
@@ -91,6 +98,7 @@ export async function prepareJob(
   }
 
   let createdPod: k8s.V1Pod | undefined = undefined
+  const createTimer = new Stopwatch()
   try {
     createdPod = await createJobPod(
       getJobPodName(),
@@ -109,6 +117,9 @@ export async function prepareJob(
   if (!createdPod?.metadata?.name) {
     throw new Error('created pod should have metadata.name')
   }
+  hookInfo(
+    `job pod ${createdPod.metadata.name} created in ${formatSeconds(createTimer.elapsedMs())}`
+  )
   core.debug(
     `Job pod created, waiting for it to come online ${createdPod?.metadata?.name}`
   )
@@ -131,8 +142,16 @@ export async function prepareJob(
     await prunePods()
     throw new Error(`pod failed to come online with error: ${formatError(err)}`)
   }
+  hookInfo(
+    `job pod Running ${formatSeconds(createTimer.elapsedMs())} after create`
+  )
 
-  await execCpToPod(createdPod.metadata.name, runnerWorkspace, '/__w')
+  const workStats = await execCpToPod(
+    createdPod.metadata.name,
+    runnerWorkspace,
+    '/__w'
+  )
+  hookInfo(formatCopyStats('copy _work to job pod', workStats))
 
   if (prepareScript) {
     await execPodStep(
@@ -148,6 +167,10 @@ export async function prepareJob(
           createdPod.metadata.name,
           vol.sourceVolumePath,
           vol.targetVolumePath
+        ).then(stats =>
+          hookInfo(
+            formatCopyStats(`copy volume to ${vol.targetVolumePath}`, stats)
+          )
         )
       )
     }
@@ -169,6 +192,7 @@ export async function prepareJob(
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
   generateResponseFile(responseFile, args, createdPod, isAlpine, serviceNames)
+  hookInfo(`prepare_job done in ${formatSeconds(totalTimer.elapsedMs())}`)
 }
 
 function generateResponseFile(

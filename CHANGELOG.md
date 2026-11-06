@@ -10,6 +10,12 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- Timing lines in the job log, prefixed `[custom-hook]`: job pod creation and time to
+  Running, every copy to and from the job pod (files, bytes, transfer time, retries, and
+  whether the hash check matched), the `_temp` merge, and the total time of `prepare_job` and
+  of each `run_script_step` with the hook's own overhead.
+- `npm run test:unit` in `packages/k8s` runs every test that needs no cluster; the
+  `Dockerfile` runs it.
 - A `Dockerfile` that builds the hook bundle (npm as a non-root user, lockfile installs with
   install scripts disabled, registry signatures checked, no-cluster unit tests run) and drops
   it over `/home/runner/k8s-novolume/index.js` in a pinned `actions-runner` image.

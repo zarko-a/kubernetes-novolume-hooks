@@ -43,13 +43,10 @@ COPY --chown=node:node packages/k8s/ packages/k8s/
 # hooklib first: k8s links it (file:../hooklib) and imports its compiled lib/.
 RUN npm run build --prefix packages/hooklib && npm run build --prefix packages/k8s
 
-# Unit tests that need no cluster. The rest of packages/k8s/tests runs against a kind cluster.
+# Unit tests that need no cluster: `test:unit` skips the upstream tests that run against a kind
+# cluster, so every new test file runs here by default.
 WORKDIR /build/packages/k8s
-RUN npx jest --ci \
-  tests/constants-test.ts \
-  tests/error-serialization-test.ts \
-  tests/format-error-test.ts \
-  tests/heartbeat-test.ts
+RUN npm run test:unit
 
 FROM ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
 
