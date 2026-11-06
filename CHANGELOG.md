@@ -31,6 +31,10 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   merge starts one `sh` per batch instead of one per file. On an 11k-file tree that cut
   `chmod` from 7.7s to 0.08s and `stat` from 10.1s to 0.06s in a local benchmark. Hashes are
   unchanged: the listings are sorted before hashing.
+- Waiting for the job pod (and a container step's Job) polls after 1s, then 15% longer each
+  time up to 3s, instead of doubling up to 20s: a pod Running at 16s was noticed at 31s, now
+  at 16.7s. The prepare-job timeout counts wall-clock time, API calls included, and its error
+  says `timed out after <N>s` instead of `backoff timeout`.
 - README, `CODEOWNERS`, `LICENSE` and `package.json` metadata describe this fork.
 
 ### Removed

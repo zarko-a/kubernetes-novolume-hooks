@@ -27,6 +27,7 @@ import {
 import * as shlex from 'shlex'
 import { parsePositiveMsEnv, WebSocketHeartbeat } from './heartbeat'
 import { CopyStats, Stopwatch, TarEntryCounter } from './hook-log'
+import { PollSchedule } from './poll'
 import type { HeartbeatWebSocket } from './heartbeat'
 
 const kc = new k8s.KubeConfig()
@@ -694,7 +695,7 @@ export async function execCpFromPod(
 }
 
 export async function waitForJobToComplete(jobName: string): Promise<void> {
-  const backOffManager = new BackOffManager()
+  const schedule = new PollSchedule()
   while (true) {
     try {
       if (await isJobSucceeded(jobName)) {
@@ -703,7 +704,7 @@ export async function waitForJobToComplete(jobName: string): Promise<void> {
     } catch (error) {
       throw new Error(`job ${jobName} has failed: ${formatError(error)}`)
     }
-    await backOffManager.backOff()
+    await sleep(schedule.next())
   }
 }
 
@@ -806,7 +807,8 @@ export async function waitForPodPhases(
   backOffPhases: Set<PodPhase>,
   maxTimeSeconds = DEFAULT_WAIT_FOR_POD_TIME_SECONDS
 ): Promise<void> {
-  const backOffManager = new BackOffManager(maxTimeSeconds)
+  const schedule = new PollSchedule()
+  const timer = new Stopwatch()
   let phase: PodPhase = PodPhase.UNKNOWN
   try {
     while (true) {
@@ -820,7 +822,11 @@ export async function waitForPodPhases(
           `Pod ${podName} is unhealthy with phase status ${phase}`
         )
       }
-      await backOffManager.backOff()
+      // Wall-clock timeout: unlike upstream's sum of sleeps, it includes the API calls.
+      if (maxTimeSeconds > 0 && timer.elapsedMs() >= maxTimeSeconds * 1000) {
+        throw new Error(`timed out after ${maxTimeSeconds}s`)
+      }
+      await sleep(schedule.next())
     }
   } catch (error) {
     throw new Error(
@@ -982,32 +988,6 @@ export function namespace(): string {
     )
   }
   return context.namespace
-}
-
-class BackOffManager {
-  private backOffSeconds = 1
-  totalTime = 0
-  constructor(private throwAfterSeconds?: number) {
-    if (!throwAfterSeconds || throwAfterSeconds < 0) {
-      this.throwAfterSeconds = undefined
-    }
-  }
-
-  async backOff(): Promise<void> {
-    await new Promise(resolve =>
-      setTimeout(resolve, this.backOffSeconds * 1000)
-    )
-    this.totalTime += this.backOffSeconds
-    if (this.throwAfterSeconds && this.throwAfterSeconds < this.totalTime) {
-      throw new Error('backoff timeout')
-    }
-    if (this.backOffSeconds < 20) {
-      this.backOffSeconds *= 2
-    }
-    if (this.backOffSeconds > 20) {
-      this.backOffSeconds = 20
-    }
-  }
 }
 
 export function containerPorts(
