@@ -24,6 +24,12 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - `scripts/container-npm.sh`, which runs npm and npx in the builder image as the calling user,
   with only the repository mounted and install scripts disabled.
 
+### Fixed
+
+- Job containers that run as a non-root user other than 1001 can write the workspace: `fs-init`
+  creates its directories group-writable (`umask 0002`), and `fsGroup: 1001` puts every
+  container in that group. Checkout used to fail with `EACCES`.
+
 ### Changed
 
 - The copy to the job pod and the hash check behind every copy run `chmod` and `stat` once per

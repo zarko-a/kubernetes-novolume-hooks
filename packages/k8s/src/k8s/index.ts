@@ -114,6 +114,9 @@ export async function createJobPod(
   const workingDirPath = githubWorkspace?.split('/').slice(-2).join('/') ?? ''
 
   const initCommands = [
+    // Group-writable directories: fsGroup 1001 puts every container in group 1001, so a job
+    // container running as any uid can write the workspace fs-init creates as uid 1001.
+    'umask 0002',
     'mkdir -p /mnt/externals',
     'mkdir -p /mnt/work',
     'mkdir -p /mnt/github',
