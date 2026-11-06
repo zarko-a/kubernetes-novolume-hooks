@@ -6,6 +6,15 @@ import { Writable } from 'stream'
 const mockExec = jest.fn()
 const mockPack = jest.fn()
 const mockExtract = jest.fn()
+const mockWarning = jest.fn()
+const mockInfo = jest.fn()
+
+jest.mock('@actions/core', () => ({
+  debug: jest.fn(),
+  info: (message: string) => mockInfo(message),
+  warning: (message: string) => mockWarning(message),
+  error: jest.fn()
+}))
 
 jest.mock('@kubernetes/client-node', () => {
   return {
@@ -56,23 +65,51 @@ const HEADERS: Header[] = [
 function tarWithHeaders(
   _dir: string,
   options?: { map?: (h: Header) => Header }
-) {
+): Writable {
   for (const header of HEADERS) {
     options?.map?.(header)
   }
   return new Writable({ write: (_c, _e, cb) => cb() })
 }
 
-// Simulates the pod side of every exec: the copy itself succeeds, and the listing used
-// for the hash check prints `podListing`.
-function execSucceeding(podListing: string) {
+interface PodBehaviour {
+  // stdout of the listing command used for the comparison
+  listing?: string
+  // exec status of the copy command, per attempt (the last one repeats)
+  copyStatuses?: { status: string; message?: string }[]
+  copyStderr?: string
+  listingStatus?: { status: string; message?: string }
+}
+
+function isListing(command: string[]): boolean {
+  return command.join(' ').includes("stat -c '%s %n'")
+}
+
+// Simulates the pod side of every exec.
+function pod(behaviour: PodBehaviour) {
+  let copies = 0
   return async (...args: unknown[]) => {
+    const command = args[3] as string[]
     const stdout = args[4] as Writable | null
-    const callback = args[8] as (status: { status: string }) => void
-    if (stdout && typeof stdout.write === 'function' && podListing) {
-      stdout.write(podListing)
+    const stderr = args[5] as Writable | null
+    const callback = args[8] as (status: {
+      status: string
+      message?: string
+    }) => void
+    if (isListing(command)) {
+      if (behaviour.listing) {
+        stdout?.write(behaviour.listing)
+      }
+      callback(behaviour.listingStatus ?? { status: 'Success' })
+      return undefined
     }
-    callback({ status: 'Success' })
+    const statuses = behaviour.copyStatuses ?? [{ status: 'Success' }]
+    const status = statuses[Math.min(copies, statuses.length - 1)]
+    copies++
+    if (behaviour.copyStderr) {
+      stderr?.write(behaviour.copyStderr)
+    }
+    callback(status)
     return undefined
   }
 }
@@ -84,7 +121,7 @@ describe('copy stats', () => {
     jest.clearAllMocks()
     process.env['ACTIONS_RUNNER_KUBERNETES_NAMESPACE'] = 'test-namespace'
     // An empty directory lists as nothing on the runner side, which matches a pod
-    // listing of nothing, so the hash check passes on the first attempt.
+    // listing of nothing.
     emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copy-stats-'))
     mockPack.mockImplementation(tarWithHeaders)
     mockExtract.mockImplementation(tarWithHeaders)
@@ -96,7 +133,7 @@ describe('copy stats', () => {
   })
 
   it('execCpToPod counts files and bytes and reports a verified copy', async () => {
-    mockExec.mockImplementation(execSucceeding(''))
+    mockExec.mockImplementation(pod({}))
 
     const stats = await execCpToPod('pod', emptyDir, '/__w')
 
@@ -104,8 +141,9 @@ describe('copy stats', () => {
       files: 2,
       bytes: 123,
       transferAttempts: 1,
-      verifyAttempts: 1,
-      verified: true
+      verified: true,
+      runnerFiles: 0,
+      podFiles: 0
     })
     expect(stats.transferMs).toBeGreaterThanOrEqual(0)
     expect(stats.verifyMs).toBeGreaterThanOrEqual(0)
@@ -113,48 +151,109 @@ describe('copy stats', () => {
       emptyDir,
       expect.objectContaining({ map: expect.any(Function) })
     )
+    expect(mockWarning).not.toHaveBeenCalled()
   })
 
-  it('execCpToPod fixes permissions with batched chmod', async () => {
-    mockExec.mockImplementation(execSucceeding(''))
+  it('execCpToPod unpacks with tar and best-effort batched chmod', async () => {
+    mockExec.mockImplementation(pod({}))
 
     await execCpToPod('pod', emptyDir, '/__w')
 
     const script = (mockExec.mock.calls[0][3] as string[])[2]
-    expect(script).toContain('find /__w -type f -exec chmod u+rw {} +')
-    expect(script).toContain('find /__w -type d -exec chmod u+rwx {} +')
-    expect(script).not.toContain('\\;')
+    expect(script).toBe(
+      'tar xf - --no-same-owner -C /__w || exit 1; ' +
+        'find /__w -type f -exec chmod u+rw {} + 2>/dev/null; ' +
+        'find /__w -type d -exec chmod u+rwx {} + 2>/dev/null; exit 0'
+    )
   })
 
-  it('execCpToPod reports a copy whose hash never matched', async () => {
-    mockExec.mockImplementation(execSucceeding('5 ./only-in-pod\n'))
+  it('execCpToPod compares once and warns with both file counts on a mismatch', async () => {
+    mockExec.mockImplementation(
+      pod({ listing: '5 ./only-in-pod\n7 ./also-only-in-pod\n' })
+    )
+
+    const stats = await execCpToPod('pod', emptyDir, '/__w')
+
+    expect(stats).toMatchObject({
+      verified: false,
+      runnerFiles: 0,
+      podFiles: 2
+    })
+    const listings = mockExec.mock.calls.filter(call =>
+      isListing(call[3] as string[])
+    )
+    expect(listings).toHaveLength(1)
+    expect(mockWarning).toHaveBeenCalledTimes(1)
+    expect(mockWarning.mock.calls[0][0]).toBe(
+      `[custom-hook] copy ${emptyDir} to job pod /__w: the files differ after the copy ` +
+        '(runner: 0 files, job pod: 2 files). The job continues.'
+    )
+  })
+
+  it('execCpToPod warns and carries on when the pod listing fails', async () => {
+    mockExec.mockImplementation(
+      pod({ listingStatus: { status: 'Failure', message: 'exec failed' } })
+    )
 
     const stats = await execCpToPod('pod', emptyDir, '/__w')
 
     expect(stats.verified).toBe(false)
-    expect(stats.verifyAttempts).toBe(15)
+    expect(stats.verifyError).toBe('exec failed')
+    expect(mockWarning.mock.calls[0][0]).toContain(
+      'could not compare the files after the copy: exec failed'
+    )
   })
 
-  it('execCpToPod counts only the last transfer attempt', async () => {
-    let calls = 0
-    const succeed = execSucceeding('')
-    mockExec.mockImplementation(async (...args: unknown[]) => {
-      calls++
-      if (calls === 1) {
-        throw new Error('connection reset')
-      }
-      return succeed(...args)
-    })
+  it('execCpToPod retries a copy whose command exited non-zero', async () => {
+    mockExec.mockImplementation(
+      pod({
+        copyStatuses: [
+          { status: 'Failure', message: 'command terminated with exit code 1' },
+          { status: 'Success' }
+        ]
+      })
+    )
 
     const stats = await execCpToPod('pod', emptyDir, '/__w')
 
     expect(stats.transferAttempts).toBe(2)
     expect(stats.files).toBe(2)
     expect(stats.bytes).toBe(123)
+    expect(stats.verified).toBe(true)
+  })
+
+  it("execCpToPod fails with tar's stderr when every attempt exits non-zero", async () => {
+    mockExec.mockImplementation(
+      pod({
+        copyStatuses: [
+          { status: 'Failure', message: 'command terminated with exit code 1' }
+        ],
+        copyStderr: 'tar: invalid magic\n'
+      })
+    )
+
+    await expect(execCpToPod('pod', emptyDir, '/__w')).rejects.toThrow(
+      `cpToPod failed after 30 attempts: copy ${emptyDir} to job pod /__w failed: ` +
+        'command terminated with exit code 1; stderr: tar: invalid magic'
+    )
+  })
+
+  it('execCpToPod logs stderr from a copy that succeeded', async () => {
+    mockExec.mockImplementation(
+      pod({ copyStderr: 'tar: ./x: time stamp in the future\n' })
+    )
+
+    const stats = await execCpToPod('pod', emptyDir, '/__w')
+
+    expect(stats.transferAttempts).toBe(1)
+    expect(mockInfo).toHaveBeenCalledWith(
+      `[custom-hook] copy ${emptyDir} to job pod /__w printed to stderr: ` +
+        'tar: ./x: time stamp in the future'
+    )
   })
 
   it('execCpFromPod counts what it extracts and reports a verified copy', async () => {
-    mockExec.mockImplementation(execSucceeding(''))
+    mockExec.mockImplementation(pod({}))
     // The runner-side listing runs in <parent>/<basename of the pod path>.
     fs.mkdirSync(path.join(emptyDir, '_runner_file_commands'))
 
@@ -168,12 +267,31 @@ describe('copy stats', () => {
       files: 2,
       bytes: 123,
       transferAttempts: 1,
-      verifyAttempts: 1,
       verified: true
     })
     expect(mockExtract).toHaveBeenCalledWith(
       emptyDir,
       expect.objectContaining({ map: expect.any(Function) })
     )
+  })
+
+  it('execCpFromPod retries a tar that exited non-zero', async () => {
+    mockExec.mockImplementation(
+      pod({
+        copyStatuses: [
+          { status: 'Failure', message: 'command terminated with exit code 2' },
+          { status: 'Success' }
+        ]
+      })
+    )
+    fs.mkdirSync(path.join(emptyDir, '_runner_file_commands'))
+
+    const stats = await execCpFromPod(
+      'pod',
+      '/__w/_temp/_runner_file_commands',
+      emptyDir
+    )
+
+    expect(stats.transferAttempts).toBe(2)
   })
 })

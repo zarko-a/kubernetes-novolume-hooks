@@ -26,7 +26,13 @@ import {
 } from './utils'
 import * as shlex from 'shlex'
 import { parsePositiveMsEnv, WebSocketHeartbeat } from './heartbeat'
-import { CopyStats, Stopwatch, TarEntryCounter } from './hook-log'
+import {
+  CopyStats,
+  HOOK_LOG_PREFIX,
+  hookInfo,
+  Stopwatch,
+  TarEntryCounter
+} from './hook-log'
 import { PollSchedule } from './poll'
 import type { HeartbeatWebSocket } from './heartbeat'
 
@@ -372,7 +378,8 @@ export async function execPodStep(
   })
 }
 
-export async function execCalculateOutputHashSorted(
+// Runs a listing command in the job pod and returns its stdout.
+export async function execListing(
   podName: string,
   containerName: string,
   command: string[]
@@ -403,17 +410,11 @@ export async function execCalculateOutputHashSorted(
         null,
         false /* tty */,
         resp => {
-          core.debug(`internalExecOutput response: ${JSON.stringify(resp)}`)
+          core.debug(`execListing response: ${JSON.stringify(resp)}`)
           if (resp.status === 'Success') {
             resolve()
           } else {
-            core.debug(
-              JSON.stringify({
-                message: resp?.message,
-                details: resp?.details
-              })
-            )
-            reject(new Error(resp?.message || 'internalExecOutput failed'))
+            reject(new Error(resp?.message || 'listing in the job pod failed'))
           }
         }
       )
@@ -421,23 +422,11 @@ export async function execCalculateOutputHashSorted(
   })
 
   outputWriter.end()
-
-  // Sort lines for consistent ordering across platforms
-  const sortedOutput =
-    output
-      .split('\n')
-      .filter(line => line.length > 0)
-      .sort()
-      .join('\n') + '\n'
-
-  const hash = createHash('sha256')
-  hash.update(sortedOutput)
-  return hash.digest('hex')
+  return output
 }
 
-export async function localCalculateOutputHashSorted(
-  commands: string[]
-): Promise<string> {
+// Runs a listing command on the runner and returns its stdout.
+export async function localListing(commands: string[]): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const child = spawn(commands[0], commands.slice(1), {
       stdio: ['ignore', 'pipe', 'ignore']
@@ -450,22 +439,119 @@ export async function localCalculateOutputHashSorted(
     child.on('error', reject)
     child.on('close', (code: number) => {
       if (code === 0) {
-        // Sort lines for consistent ordering across distributions/platforms
-        const sortedOutput =
-          output
-            .split('\n')
-            .filter(line => line.length > 0)
-            .sort()
-            .join('\n') + '\n'
-
-        const hash = createHash('sha256')
-        hash.update(sortedOutput)
-        resolve(hash.digest('hex'))
+        resolve(output)
       } else {
-        reject(new Error(`child process exited with code ${code}`))
+        reject(new Error(`listing on the runner exited with code ${code}`))
       }
     })
   })
+}
+
+export interface ListingDigest {
+  hash: string
+  files: number
+}
+
+// Hash of a `listDirAllCommand` listing. Lines are sorted first, because `find` order
+// differs between filesystems and `find -exec {} +` batches.
+export function digestListing(output: string): ListingDigest {
+  const lines = output
+    .split('\n')
+    .filter(line => line.length > 0)
+    .sort()
+  const hash = createHash('sha256')
+  hash.update(`${lines.join('\n')}\n`)
+  return { hash: hash.digest('hex'), files: lines.length }
+}
+
+interface VerifyResult {
+  verified: boolean
+  runnerFiles?: number
+  podFiles?: number
+  verifyError?: string
+  verifyMs: number
+}
+
+// One comparison of the two sides' listings after a copy. A mismatch or a failed listing
+// is a visible warning, not a retry and not a job failure: upstream retried 15 times,
+// silently, and then carried on anyway.
+async function verifyCopy(
+  description: string,
+  runnerSide: () => Promise<string>,
+  podSide: () => Promise<string>
+): Promise<VerifyResult> {
+  const timer = new Stopwatch()
+  try {
+    const [runnerOutput, podOutput] = await Promise.all([
+      runnerSide(),
+      podSide()
+    ])
+    const runner = digestListing(runnerOutput)
+    const pod = digestListing(podOutput)
+    const verified = runner.hash === pod.hash
+    if (!verified) {
+      core.warning(
+        `${HOOK_LOG_PREFIX} ${description}: the files differ after the copy ` +
+          `(runner: ${runner.files} files, job pod: ${pod.files} files). The job continues.`
+      )
+    }
+    return {
+      verified,
+      runnerFiles: runner.files,
+      podFiles: pod.files,
+      verifyMs: timer.elapsedMs()
+    }
+  } catch (error) {
+    const verifyError = formatError(error)
+    core.warning(
+      `${HOOK_LOG_PREFIX} ${description}: could not compare the files after the copy: ${verifyError}. The job continues.`
+    )
+    return { verified: false, verifyError, verifyMs: timer.elapsedMs() }
+  }
+}
+
+// Resolves when an exec'd copy command exits 0. A non-zero exit rejects with the command's
+// stderr, so the caller retries the copy. Stderr from a successful command (tar warnings)
+// is logged, not treated as a failure.
+function settleCopyExec(
+  description: string,
+  errStream: WritableStreamBuffer,
+  resolve: (value: unknown) => void,
+  reject: (reason: Error) => void
+): (status: k8s.V1Status) => void {
+  return status => {
+    const stderr = errStream.size()
+      ? (errStream.getContentsAsString() || '').trim()
+      : ''
+    if (status.status !== 'Success') {
+      reject(
+        new Error(
+          `${description} failed: ${status.message || status.status}` +
+            (stderr ? `; stderr: ${stderr}` : '')
+        )
+      )
+      return
+    }
+    if (stderr) {
+      hookInfo(`${description} printed to stderr: ${stderr}`)
+    }
+    resolve(status)
+  }
+}
+
+// Shell command that unpacks the tar stream on stdin into containerPath, then makes files
+// and directories writable by the job container's user. A tar failure fails the command,
+// with tar's stderr. The chmods are best effort on purpose: a non-root job container cannot
+// chmod directories it does not own (`/__w` itself, fs-init's workspace directory), and
+// failing on that would break jobs that work today.
+export function extractToPodCommand(containerPath: string): string {
+  const target = shlex.quote(containerPath)
+  return (
+    `tar xf - --no-same-owner -C ${target} || exit 1; ` +
+    `find ${target} -type f -exec chmod u+rw {} + 2>/dev/null; ` +
+    `find ${target} -type d -exec chmod u+rwx {} + 2>/dev/null; ` +
+    'exit 0'
+  )
 }
 
 export async function execCpToPod(
@@ -474,6 +560,7 @@ export async function execCpToPod(
   containerPath: string
 ): Promise<CopyStats> {
   core.debug(`Copying ${runnerPath} to pod ${podName} at ${containerPath}`)
+  const description = `copy ${runnerPath} to job pod ${containerPath}`
 
   const transferTimer = new Stopwatch()
   let counter = new TarEntryCounter()
@@ -481,15 +568,7 @@ export async function execCpToPod(
   while (true) {
     try {
       const exec = new k8s.Exec(kc)
-      // Use tar to extract with --no-same-owner to avoid ownership issues.
-      // Then use find to fix permissions. The -m flag helps but we also need to fix permissions after.
-      const command = [
-        'sh',
-        '-c',
-        `tar xf - --no-same-owner -C ${shlex.quote(containerPath)} 2>/dev/null; ` +
-          `find ${shlex.quote(containerPath)} -type f -exec chmod u+rw {} + 2>/dev/null; ` +
-          `find ${shlex.quote(containerPath)} -type d -exec chmod u+rwx {} + 2>/dev/null`
-      ]
+      const command = ['sh', '-c', extractToPodCommand(containerPath)]
       counter = new TarEntryCounter()
       const readStream = tar.pack(runnerPath, { map: counter.map })
       const errStream = new WritableStreamBuffer()
@@ -504,16 +583,7 @@ export async function execCpToPod(
             errStream,
             readStream,
             false,
-            async status => {
-              if (errStream.size()) {
-                reject(
-                  new Error(
-                    `Error from execCpToPod - status: ${status.status}, details: \n ${errStream.getContentsAsString()}`
-                  )
-                )
-              }
-              resolve(status)
-            }
+            settleCopyExec(description, errStream, resolve, reject)
           )
           .catch(e => reject(e))
       })
@@ -531,50 +601,23 @@ export async function execCpToPod(
   }
   const transferMs = transferTimer.elapsedMs()
 
-  const verifyTimer = new Stopwatch()
-  let verified = false
-  let verifyAttempts = 0
-  let attempts = 15
-  const delay = 1000
-  for (let i = 0; i < attempts; i++) {
-    verifyAttempts = i + 1
-    try {
-      const want = await localCalculateOutputHashSorted([
+  const verify = await verifyCopy(
+    description,
+    async () => localListing(['sh', '-c', listDirAllCommand(runnerPath)]),
+    async () =>
+      execListing(podName, JOB_CONTAINER_NAME, [
         'sh',
         '-c',
-        listDirAllCommand(runnerPath)
+        listDirAllCommand(containerPath)
       ])
-
-      const got = await execCalculateOutputHashSorted(
-        podName,
-        JOB_CONTAINER_NAME,
-        ['sh', '-c', listDirAllCommand(containerPath)]
-      )
-
-      if (got !== want) {
-        core.debug(
-          `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
-        )
-        await sleep(delay)
-        continue
-      }
-
-      verified = true
-      break
-    } catch (error) {
-      core.debug(`Attempt ${i + 1} failed: ${error}`)
-      await sleep(delay)
-    }
-  }
+  )
 
   return {
     files: counter.files,
     bytes: counter.bytes,
     transferAttempts: attempt + 1,
     transferMs,
-    verifyAttempts,
-    verified,
-    verifyMs: verifyTimer.elapsedMs()
+    ...verify
   }
 }
 
@@ -587,13 +630,13 @@ export async function execCpFromPod(
   core.debug(
     `Copying from pod ${podName} ${containerPath} to ${targetRunnerPath}`
   )
+  const description = `copy job pod ${containerPath} to ${targetRunnerPath}`
 
   const transferTimer = new Stopwatch()
   let counter = new TarEntryCounter()
   let attempt = 0
   while (true) {
     try {
-      // make temporary directory
       const exec = new k8s.Exec(kc)
       const containerPaths = containerPath.split('/')
       const dirname = containerPaths.pop() as string
@@ -620,16 +663,7 @@ export async function execCpFromPod(
             errStream,
             null,
             false,
-            async status => {
-              if (errStream.size()) {
-                reject(
-                  new Error(
-                    `Error from cpFromPod - details: \n ${errStream.getContentsAsString()}`
-                  )
-                )
-              }
-              resolve(status)
-            }
+            settleCopyExec(description, errStream, resolve, reject)
           )
           .catch(e => reject(e))
       })
@@ -647,50 +681,23 @@ export async function execCpFromPod(
   }
   const transferMs = transferTimer.elapsedMs()
 
-  const verifyTimer = new Stopwatch()
-  let verified = false
-  let verifyAttempts = 0
-  let attempts = 15
-  const delay = 1000
-  for (let i = 0; i < attempts; i++) {
-    verifyAttempts = i + 1
-    try {
-      const want = await execCalculateOutputHashSorted(
-        podName,
-        JOB_CONTAINER_NAME,
-        ['sh', '-c', listDirAllCommand(containerPath)]
-      )
-
-      const got = await localCalculateOutputHashSorted([
+  const verify = await verifyCopy(
+    description,
+    async () => localListing(['sh', '-c', listDirAllCommand(targetRunnerPath)]),
+    async () =>
+      execListing(podName, JOB_CONTAINER_NAME, [
         'sh',
         '-c',
-        listDirAllCommand(targetRunnerPath)
+        listDirAllCommand(containerPath)
       ])
-
-      if (got !== want) {
-        core.debug(
-          `The hash of the directory does not match the expected value; want='${want}' got='${got}'`
-        )
-        await sleep(delay)
-        continue
-      }
-
-      verified = true
-      break
-    } catch (error) {
-      core.debug(`Attempt ${i + 1} failed: ${error}`)
-      await sleep(delay)
-    }
-  }
+  )
 
   return {
     files: counter.files,
     bytes: counter.bytes,
     transferAttempts: attempt + 1,
     transferMs,
-    verifyAttempts,
-    verified,
-    verifyMs: verifyTimer.elapsedMs()
+    ...verify
   }
 }
 

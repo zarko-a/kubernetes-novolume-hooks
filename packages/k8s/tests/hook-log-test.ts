@@ -89,38 +89,43 @@ describe('hook-log', () => {
       bytes: 183 * 1024 * 1024,
       transferAttempts: 1,
       transferMs: 20400,
-      verifyAttempts: 1,
       verified: true,
+      runnerFiles: 11500,
+      podFiles: 11500,
       verifyMs: 9800
     }
 
     it('formats a verified copy', () => {
       expect(formatCopyStats('copy _work to job pod', base)).toBe(
-        'copy _work to job pod: 11500 files, 183.0 MiB in 20.4s; verified in 9.8s (1 attempt)'
+        'copy _work to job pod: 11500 files, 183.0 MiB in 20.4s; verified in 9.8s'
       )
     })
 
-    it('names transfer retries and verify attempts', () => {
+    it('names transfer retries', () => {
+      expect(formatCopyStats('copy', { ...base, transferAttempts: 3 })).toBe(
+        'copy: 11500 files, 183.0 MiB in 20.4s (3 attempts); verified in 9.8s'
+      )
+    })
+
+    it('names both file counts when the listings differ', () => {
       expect(
-        formatCopyStats('copy', {
-          ...base,
-          transferAttempts: 3,
-          verifyAttempts: 2
-        })
+        formatCopyStats('copy', { ...base, verified: false, podFiles: 11499 })
       ).toBe(
-        'copy: 11500 files, 183.0 MiB in 20.4s (3 attempts); verified in 9.8s (2 attempts)'
+        'copy: 11500 files, 183.0 MiB in 20.4s; NOT verified, runner has 11500 files and job pod 11499 (checked in 9.8s)'
       )
     })
 
-    it('says when the copy was never verified', () => {
+    it('says when the comparison itself failed', () => {
       expect(
         formatCopyStats('copy', {
           ...base,
           verified: false,
-          verifyAttempts: 15
+          runnerFiles: undefined,
+          podFiles: undefined,
+          verifyError: 'exec failed'
         })
       ).toBe(
-        'copy: 11500 files, 183.0 MiB in 20.4s; NOT verified after 15 attempts in 9.8s'
+        'copy: 11500 files, 183.0 MiB in 20.4s; NOT verified, the comparison failed in 9.8s'
       )
     })
   })

@@ -62,23 +62,30 @@ export interface CopyStats {
   bytes: number
   transferAttempts: number
   transferMs: number
-  verifyAttempts: number
+  // One comparison of both sides' file listings after the transfer.
   verified: boolean
+  runnerFiles?: number
+  podFiles?: number
+  verifyError?: string
   verifyMs: number
 }
 
 export function formatCopyStats(label: string, stats: CopyStats): string {
   const retries =
     stats.transferAttempts > 1 ? ` (${stats.transferAttempts} attempts)` : ''
-  const verify = stats.verified
-    ? `verified in ${formatSeconds(stats.verifyMs)}`
-    : `NOT verified after ${stats.verifyAttempts} attempts in ${formatSeconds(stats.verifyMs)}`
-  const plural = stats.verifyAttempts === 1 ? '' : 's'
-  const verifyAttempts = stats.verified
-    ? ` (${stats.verifyAttempts} attempt${plural})`
-    : ''
+  const checked = formatSeconds(stats.verifyMs)
+  let verify: string
+  if (stats.verified) {
+    verify = `verified in ${checked}`
+  } else if (stats.verifyError !== undefined) {
+    verify = `NOT verified, the comparison failed in ${checked}`
+  } else {
+    verify =
+      `NOT verified, runner has ${stats.runnerFiles} files and job pod ` +
+      `${stats.podFiles} (checked in ${checked})`
+  }
   return (
     `${label}: ${stats.files} files, ${formatBytes(stats.bytes)} in ` +
-    `${formatSeconds(stats.transferMs)}${retries}; ${verify}${verifyAttempts}`
+    `${formatSeconds(stats.transferMs)}${retries}; ${verify}`
   )
 }

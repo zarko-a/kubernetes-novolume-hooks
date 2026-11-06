@@ -1,8 +1,25 @@
 import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { listDirAllCommand, mergeTempCommand } from '../src/k8s/utils'
+
+jest.mock('@kubernetes/client-node', () => ({
+  KubeConfig: jest.fn().mockImplementation(() => ({
+    loadFromDefault: jest.fn(),
+    makeApiClient: jest.fn().mockReturnValue({}),
+    getContexts: jest.fn().mockReturnValue([{ namespace: 'test-namespace' }])
+  })),
+  // eslint-disable-next-line @typescript-eslint/no-extraneous-class
+  CoreV1Api: class CoreV1Api {},
+  // eslint-disable-next-line @typescript-eslint/no-extraneous-class
+  BatchV1Api: class BatchV1Api {},
+  // eslint-disable-next-line @typescript-eslint/no-extraneous-class
+  AuthorizationV1Api: class AuthorizationV1Api {}
+}))
+
+import { digestListing, extractToPodCommand } from '../src/k8s'
 
 // The shell commands below run for real with the container's `sh` and `find`. Each batched
 // command is compared with the per-file command it replaced, on the same files.
@@ -162,6 +179,90 @@ describe('batched shell commands', () => {
       const { src, dst } = fixture(path.join(workspace, 'a dir'))
       sh(mergeTempCommand(src, dst))
       expect(snapshot(dst)).toContain('deep/nested/dir/file.sh: echo hi')
+    })
+  })
+
+  describe('extractToPodCommand', () => {
+    function runWithStdin(
+      script: string,
+      input: Buffer
+    ): { status: number; stderr: string } {
+      try {
+        execFileSync('sh', ['-c', script], { input, stdio: 'pipe' })
+        return { status: 0, stderr: '' }
+      } catch (error) {
+        const failure = error as { status: number; stderr: Buffer }
+        return { status: failure.status, stderr: failure.stderr.toString() }
+      }
+    }
+
+    it('unpacks a tar stream and exits 0', () => {
+      const source = path.join(workspace, 'source')
+      writeFiles(source, { 'a/b.txt': 'b', 'c.txt': 'c' })
+      const archive = execFileSync('tar', ['cf', '-', '-C', source, '.'])
+      const target = path.join(workspace, 'target')
+      fs.mkdirSync(target)
+
+      const result = runWithStdin(extractToPodCommand(target), archive)
+
+      expect(result.status).toBe(0)
+      expect(snapshot(target)).toEqual(['a/b.txt: b', 'c.txt: c'])
+    })
+
+    it("fails with tar's stderr when the stream is not a tar archive", () => {
+      const target = path.join(workspace, 'target')
+      fs.mkdirSync(target)
+
+      const result = runWithStdin(
+        extractToPodCommand(target),
+        Buffer.from(
+          'this is not a tar archive, but it is long enough '.repeat(20)
+        )
+      )
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/tar/)
+    })
+
+    it('ignores chmod failures, as for directories a non-root user does not own', () => {
+      const source = path.join(workspace, 'source')
+      writeFiles(source, { 'x.txt': 'x' })
+      const archive = execFileSync('tar', ['cf', '-', '-C', source, '.'])
+      const target = path.join(workspace, 'target')
+      fs.mkdirSync(target)
+      // A fake chmod that always fails, first on PATH.
+      const bin = path.join(workspace, 'bin')
+      writeFiles(bin, {
+        chmod: '#!/bin/sh\necho "chmod: denied" >&2\nexit 1\n'
+      })
+      fs.chmodSync(path.join(bin, 'chmod'), 0o755)
+
+      const result = runWithStdin(
+        `PATH='${bin}':"$PATH"; ${extractToPodCommand(target)}`,
+        archive
+      )
+
+      expect(result.status).toBe(0)
+      expect(result.stderr).toBe('')
+      expect(snapshot(target)).toEqual(['x.txt: x'])
+    })
+  })
+
+  describe('digestListing', () => {
+    it('hashes the sorted lines and counts them', () => {
+      const a = digestListing('2 ./b\n1 ./a\n')
+      const b = digestListing('1 ./a\n2 ./b\n\n')
+      expect(a).toEqual(b)
+      expect(a.files).toBe(2)
+      expect(digestListing('').files).toBe(0)
+      expect(digestListing('1 ./a\n').hash).not.toBe(a.hash)
+    })
+
+    it('matches the upstream hash of a listing', () => {
+      // sha256 of "1 ./a\n2 ./b\n", what upstream's hash functions computed
+      expect(digestListing('2 ./b\n1 ./a\n').hash).toBe(
+        createHash('sha256').update('1 ./a\n2 ./b\n').digest('hex')
+      )
     })
   })
 })

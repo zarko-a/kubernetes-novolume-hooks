@@ -35,6 +35,13 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   time up to 3s, instead of doubling up to 20s: a pod Running at 16s was noticed at 31s, now
   at 16.7s. The prepare-job timeout counts wall-clock time, API calls included, and its error
   says `timed out after <N>s` instead of `backoff timeout`.
+- Copies fail fast instead of retrying silently. A copy command that exits non-zero (a failed
+  `tar`) is a failed attempt and is retried; the error carries `tar`'s stderr, which is no
+  longer discarded. Stderr from a successful copy is logged. The `chmod` after unpacking stays
+  best effort, because a non-root job container cannot chmod directories it does not own.
+- After each copy, the files on both sides are compared once, in parallel, instead of up to 15
+  times with a second's sleep between tries. A mismatch, or a comparison that could not run, is
+  a warning naming both file counts; the job continues, as it did after upstream's last retry.
 - README, `CODEOWNERS`, `LICENSE` and `package.json` metadata describe this fork.
 
 ### Removed
