@@ -1,7 +1,7 @@
 {
   "name": "hooklib",
   "version": "0.1.0",
-  "description": "",
+  "description": "Shared TypeScript definitions and utilities for the container hooks",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "scripts": {
@@ -23,5 +23,14 @@
   },
   "dependencies": {
     "@actions/core": "^2.0.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zarko-a/kubernetes-novolume-hooks.git",
+    "directory": "packages/hooklib"
+  },
+  "bugs": {
+    "url": "https://github.com/zarko-a/kubernetes-novolume-hooks/issues"
+  },
+  "homepage": "https://github.com/zarko-a/kubernetes-novolume-hooks#readme"
 }

@@ -1,45 +1,46 @@
-## Runner Container Hooks
-The Runner Container Hooks repo provides a set of packages that implement the container hooks feature in the [actions/runner](https://github.com/actions/runner). These can be used as is, or you can use them as a guide to implement your own hooks.
+# kubernetes-novolume-hooks
 
-More information on how to implement your own hooks can be found in the [adr](https://github.com/actions/runner/pull/1891). The `examples` folder provides example inputs for each hook.
+Container hooks for the `kubernetes-novolume` container mode of
+[actions-runner-controller](https://github.com/actions/actions-runner-controller) (ARC). The
+bundle replaces `/home/runner/k8s-novolume/index.js` in the
+[actions/runner](https://github.com/actions/runner) image, and runs each job in its own pod
+with no volume shared between the runner pod and the job pod.
 
-### Note
+## Status
 
-Thank you for your interest in this GitHub action, however, right now we are not taking contributions. 
+Under development and not ready for use. There are no releases yet, and contributions are not
+being accepted while the design settles. Changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
 
-We continue to focus our resources on strategic areas that help our customers be successful while making developers' lives easier. While GitHub Actions remains a key part of this vision, we are allocating resources towards other areas of Actions and are not taking contributions to this repository at this time. The GitHub public roadmap is the best place to follow along for any updates on features we’re working on and what stage they’re in.
+## Relationship to upstream
 
-We are taking the following steps to better direct requests related to GitHub Actions, including:
+This is a fork of [actions/runner-container-hooks](https://github.com/actions/runner-container-hooks),
+taken from upstream `main` at `d4731a4` (v0.8.1 plus 13 commits). It is a divergent fork, not a
+mirror: it does not track upstream, and upstream fixes worth having are cherry-picked. Thanks to
+the upstream maintainers and contributors, whose work this builds on.
 
-1. We will be directing questions and support requests to our [Community Discussions area](https://github.com/orgs/community/discussions/categories/actions)
+This project is not affiliated with or endorsed by GitHub.
 
-2. High Priority bugs can be reported through Community Discussions or you can report these to our support team https://support.github.com/contact/bug-report.
+## What it is not
 
-3. Security Issues should be handled as per our [security.md](security.md)
+Only ARC's `kubernetes-novolume` mode is covered. This repository does not contain:
 
-We will still provide security updates for this project and fix major breaking changes during this time.
+- the Docker hook (upstream's `packages/docker`);
+- the volume-backed `kubernetes` mode, where the job pod mounts the runner's work volume;
+- anything for ARC's `dind` mode, which uses no hooks;
+- Windows support.
 
-You are welcome to still raise bugs in this repo.
+## Goals
 
-## Background 
+- Faster job startup: less time between a runner picking up a job and its first step.
+- Visible pod status in the job log while a job starts, so a slow or stuck job explains itself.
+- Clear failures instead of silent retries.
 
-Three projects are included in the `packages` folder
-- k8s: A kubernetes hook implementation that spins up pods dynamically to run a job. More details can be found in the [readme](./packages/k8s/README.md)
-- docker: A hook implementation of the runner's docker implementation. More details can be found in the [readme](./packages/docker/README.md)
-- hooklib: a shared library which contains typescript definitions and utilities that the other projects consume
+## Disclaimer
 
-## License 
+This project is largely vibe coded: it is written with an AI coding agent. The author runs it in
+their own CI, so it is exercised for real, but it comes with no warranty or guarantee of any
+kind. Use it at your own risk, as the MIT license also says.
 
-This project is licensed under the terms of the MIT open source license. Please refer to [MIT](./LICENSE.md) for the full terms.
+## License
 
-## Maintainers 
-
-See the [Codeowners](./CODEOWNERS)
-
-## Support
-
-Find a bug? Please file an issue in this repository using the issue templates.
-
-## Code of Conduct
-
-See our [Code of Conduct](./CODE_OF_CONDUCT.MD)
+MIT, see [LICENSE](./LICENSE).

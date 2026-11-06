@@ -1,7 +1,7 @@
 {
   "name": "kubehooks",
   "version": "0.1.0",
-  "description": "",
+  "description": "Container hook for actions-runner-controller's kubernetes-novolume mode: runs each job in its own pod",
   "main": "lib/index.js",
   "scripts": {
     "test": "jest --runInBand",
@@ -33,5 +33,14 @@
     "jest": "^30.4.2",
     "ts-jest": "^29.4.11",
     "typescript": "^5.9.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zarko-a/kubernetes-novolume-hooks.git",
+    "directory": "packages/k8s"
+  },
+  "bugs": {
+    "url": "https://github.com/zarko-a/kubernetes-novolume-hooks/issues"
+  },
+  "homepage": "https://github.com/zarko-a/kubernetes-novolume-hooks#readme"
 }
