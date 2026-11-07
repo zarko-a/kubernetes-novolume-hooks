@@ -83,6 +83,11 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- The `Buffer() is deprecated` warning (DEP0005) no longer appears in every hook step's log.
+  It came from stream-buffers, which the copies used to collect the exec's stderr; a small
+  stream on Node's built-ins replaces it. The `punycode` (DEP0040) and `url.parse()`
+  (DEP0169) warnings remain: they come from `node-fetch` 2 inside `@kubernetes/client-node`
+  1.x, which 2.x replaces.
 - A copy from the job pod returns only after every file is written on the runner. It returned
   when the exec's status arrived, while tar-fs could still be writing, so the runner could read
   incomplete step outputs. Upstream's 15 silent hash retries hid the race; comparing once

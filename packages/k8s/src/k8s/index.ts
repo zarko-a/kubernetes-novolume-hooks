@@ -5,7 +5,6 @@ import * as k8s from '@kubernetes/client-node'
 import tar from 'tar-fs'
 import * as stream from 'stream'
 import type { EventEmitter } from 'events'
-import { WritableStreamBuffer } from 'stream-buffers'
 import { createHash } from 'crypto'
 import type { ContainerInfo, Registry } from 'hooklib'
 import {
@@ -26,6 +25,7 @@ import {
   WORK_VOLUME
 } from './utils'
 import * as shlex from 'shlex'
+import { collectingStream, CollectingStream } from './collect-stream'
 import { parsePositiveMsEnv, WebSocketHeartbeat } from './heartbeat'
 import {
   CopyStats,
@@ -573,14 +573,12 @@ export function onlyDirectoryMetadataErrors(stderr: string): boolean {
 // metadata errors (see above). Stderr from a successful command is logged.
 function settleCopyExec(
   description: string,
-  errStream: WritableStreamBuffer,
+  errStream: CollectingStream,
   resolve: (value: unknown) => void,
   reject: (reason: Error) => void
 ): (status: k8s.V1Status) => void {
   return status => {
-    const stderr = errStream.size()
-      ? (errStream.getContentsAsString() || '').trim()
-      : ''
+    const stderr = errStream.text().trim()
     if (status.status !== 'Success' && onlyDirectoryMetadataErrors(stderr)) {
       hookInfo(
         `${description}: tar could not set the mode or times of directories this user ` +
@@ -664,7 +662,7 @@ export async function execCpToPod(
       const command = ['sh', '-c', extractToPodCommand(containerPath)]
       counter = new TarEntryCounter()
       const readStream = tar.pack(runnerPath, { map: counter.map })
-      const errStream = new WritableStreamBuffer()
+      const errStream = collectingStream()
       await new Promise((resolve, reject) => {
         exec
           .exec(
@@ -673,7 +671,7 @@ export async function execCpToPod(
             JOB_CONTAINER_NAME,
             command,
             null,
-            errStream,
+            errStream.stream,
             readStream,
             false,
             settleCopyExec(description, errStream, resolve, reject)
@@ -743,7 +741,7 @@ export async function execCpFromPod(
       ]
       counter = new TarEntryCounter()
       const writerStream = tar.extract(parentRunnerPath, { map: counter.map })
-      const errStream = new WritableStreamBuffer()
+      const errStream = collectingStream()
       // The exec's status arrives as soon as tar in the pod exits, while tar-fs may still be
       // writing what it received. Wait for tar-fs to finish too, or the runner reads files
       // (step outputs) that are not complete yet. Upstream's 15 hash retries hid this race.
@@ -760,7 +758,7 @@ export async function execCpFromPod(
             JOB_CONTAINER_NAME,
             command,
             writerStream,
-            errStream,
+            errStream.stream,
             null,
             false,
             settleCopyExec(description, errStream, resolve, reject)
