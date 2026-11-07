@@ -44,6 +44,10 @@ import {
 import { renderSettings, resolveFailFastSettings } from '../k8s/pod-status'
 import { startReadAhead } from '../k8s/read-ahead'
 import { ExternalsMode, resolveExternals } from '../k8s/externals'
+import {
+  addGitSafeDirectory,
+  resolveGitSafeDirectory
+} from '../k8s/git-safe-directory'
 import { JobSizeError, loadJobTemplate } from '../k8s/job-size'
 import {
   formatWorkTransfer,
@@ -125,14 +129,29 @@ export async function prepareJob(
     args.container.environmentVariables,
     process.env
   )
-  for (const warning of [transfer.warning, externals.warning]) {
+  const gitSafeDirectory = resolveGitSafeDirectory(
+    args.container.environmentVariables,
+    process.env
+  )
+  const gitWarning =
+    gitSafeDirectory.value === 'true' && container?.env
+      ? addGitSafeDirectory(container.env)
+      : undefined
+  for (const warning of [
+    transfer.warning,
+    externals.warning,
+    gitSafeDirectory.warning,
+    gitWarning
+  ]) {
     if (warning) {
       core.warning(`${HOOK_LOG_PREFIX} ${warning}`)
     }
   }
   hookInfo(
     `work transfer ${transfer.mode} (${transfer.source}), ` +
-      `externals ${externals.mode} (${externals.source})`
+      `externals ${externals.mode} (${externals.source}), ` +
+      `git safe.directory ${gitSafeDirectory.value === 'true' && !gitWarning ? 'on' : 'off'} ` +
+      `(${gitSafeDirectory.source})`
   )
   const work =
     transfer.mode === 'http' ? await serveWork(runnerWorkspace) : undefined

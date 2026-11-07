@@ -10,6 +10,14 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- git trusts the workspace in every step: the hook adds `safe.directory=*` to the job
+  container's environment as git config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`,
+  `GIT_CONFIG_VALUE_<n>`, appended after any entries the workflow sets). The workspace is
+  owned by uid 1001 while the job container usually runs as another user, and
+  actions/checkout adds `safe.directory` only for its own git calls, so a later step's git
+  failed with "dubious ownership" unless the workflow added it. No file owners change.
+  `HOOK_GIT_SAFE_DIRECTORY` (`true` by default, or `false`, from the job container's env,
+  then the runner's env) turns it off.
 - Per-job sizing: a job asks for its pod's size in the job container's env (`container.env`
   in the workflow), so one runner scale set serves every size. `HOOK_JOB_MEMORY` (request and
   limit, `Mi`/`Gi`) and `HOOK_JOB_CPU` (request, cores or millicores) are required;
