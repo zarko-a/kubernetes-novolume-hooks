@@ -104,11 +104,10 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
-- The `Buffer() is deprecated` warning (DEP0005) no longer appears in every hook step's log.
-  It came from stream-buffers, which the copies used to collect the exec's stderr; a small
-  stream on Node's built-ins replaces it. The `punycode` (DEP0040) and `url.parse()`
-  (DEP0169) warnings remain: they come from `node-fetch` 2 inside `@kubernetes/client-node`
-  1.x, which 2.x replaces.
+- No `DeprecationWarning` lines in the job log. `Buffer() is deprecated` (DEP0005) came from
+  stream-buffers, which the copies used to collect the exec's stderr; a small stream on
+  Node's built-ins replaces it. `punycode` (DEP0040) and `url.parse()` (DEP0169) came from
+  `node-fetch` 2 inside `@kubernetes/client-node` 1.x, gone with 2.x (see "Changed").
 - A copy from the job pod returns only after every file is written on the runner. It returned
   when the exec's status arrived, while tar-fs could still be writing, so the runner could read
   incomplete step outputs. Upstream's 15 silent hash retries hid the race; comparing once
@@ -119,6 +118,14 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Changed
 
+- `@kubernetes/client-node` 1.4.0 -> 2.0.1. Every API call and exec now goes through
+  `undici` (the HTTP client behind Node's own `fetch`) instead of `node-fetch` 2, which
+  removes `node-fetch`, `whatwg-url`, `tr46` and `webidl-conversions` from the bundle, and
+  with them two deprecation warnings per hook process. 2.x needs Node 22 or later; the
+  runner runs the hook with its internal `node24`. Shared dependencies moved with it:
+  `js-yaml` 5.5.0, `form-data` 4.0.6, `ip-address` 10.7.5, `socks-proxy-agent` 10.1.0,
+  which also clears their open advisories. Resolving needs `--legacy-peer-deps` because of
+  upstream's dev-only `ts-jest` 29 / Babel 8 peer conflict; no dev package changed.
 - The copy to the job pod and the hash check behind every copy run `chmod` and `stat` once per
   batch of files (`find -exec ... {} +`) instead of once per file, and the per-step `_temp`
   merge starts one `sh` per batch instead of one per file. On an 11k-file tree that cut
