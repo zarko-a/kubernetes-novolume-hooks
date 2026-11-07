@@ -2,7 +2,7 @@ import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import { HookData } from 'hooklib/lib'
 import * as path from 'path'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'crypto'
 
 const kc = new k8s.KubeConfig()
 
@@ -20,7 +20,7 @@ export class TestHelper {
     this.tempDirPath = `${__dirname}/_temp/runner`
     this.runnerWorkdir = `${this.tempDirPath}/_work`
     this.runnerTemp = `${this.tempDirPath}/_work/_temp`
-    this.podName = uuidv4().replace(/-/g, '')
+    this.podName = randomUUID().replace(/-/g, '')
   }
 
   async initialize(): Promise<void> {
@@ -86,7 +86,7 @@ export class TestHelper {
       })
   }
   createFile(fileName?: string): string {
-    const filePath = `${this.tempDirPath}/${fileName || uuidv4()}`
+    const filePath = `${this.tempDirPath}/${fileName || randomUUID()}`
     fs.writeFileSync(filePath, '')
     return filePath
   }

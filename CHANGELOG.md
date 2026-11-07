@@ -120,6 +120,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Removed
 
+- The `uuid` dependency (Node's `crypto.randomUUID()` replaces it), and `@actions/exec` and
+  `@actions/io`, which nothing imported.
 - The Docker hook (`packages/docker`), upstream's GitHub workflows and Dependabot configuration.
 - Upstream's contributing guide, code of conduct, security policy and release notes, which
   describe GitHub's processes and contacts.

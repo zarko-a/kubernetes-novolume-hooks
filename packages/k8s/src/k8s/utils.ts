@@ -2,7 +2,7 @@ import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
 import * as yaml from 'js-yaml'
 import * as core from '@actions/core'
-import { v1 as uuidv4 } from 'uuid'
+import { randomUUID } from 'crypto'
 import { CONTAINER_EXTENSION_PREFIX } from '../hooks/constants'
 import * as shlex from 'shlex'
 import { Mount } from 'hooklib'
@@ -45,7 +45,7 @@ cp -R /__w/_temp/_github_workflow /github/workflow
 mkdir -p ${mountDirs}
 `
 
-  const filename = `${uuidv4()}.sh`
+  const filename = `${randomUUID()}.sh`
   const entryPointPath = `${process.env.RUNNER_TEMP}/${filename}`
   fs.writeFileSync(entryPointPath, content)
   return {
@@ -80,7 +80,7 @@ exec ${environmentPrefix} ${entryPoint} ${
     entryPointArgs?.length ? entryPointArgs.join(' ') : ''
   }
 `
-  const filename = `${uuidv4()}.sh`
+  const filename = `${randomUUID()}.sh`
   const entryPointPath = `${process.env.RUNNER_TEMP}/${filename}`
   fs.writeFileSync(entryPointPath, content)
   return {
@@ -114,7 +114,7 @@ exec ${environmentPrefix} ${entryPoint} ${
     entryPointArgs?.length ? entryPointArgs.join(' ') : ''
   }
 `
-  const filename = `${uuidv4()}.sh`
+  const filename = `${randomUUID()}.sh`
   const entryPointPath = `${dst}/${filename}`
   core.debug(`Writing container step script to ${entryPointPath}`)
   fs.writeFileSync(entryPointPath, content)

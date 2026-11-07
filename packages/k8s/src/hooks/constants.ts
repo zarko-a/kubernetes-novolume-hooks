@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'crypto'
 
 export function getRunnerPodName(): string {
   const name = process.env.ACTIONS_RUNNER_POD_NAME
@@ -21,7 +21,7 @@ export function getStepPodName(): string {
   return `${getRunnerPodName().substring(
     0,
     MAX_POD_NAME_LENGTH - ('-step-'.length + STEP_POD_NAME_SUFFIX_LENGTH)
-  )}-step-${uuidv4().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
+  )}-step-${randomUUID().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
 }
 
 export function getVolumeClaimName(): string {
@@ -36,7 +36,7 @@ export function getSecretName(): string {
   return `${getRunnerPodName().substring(
     0,
     MAX_POD_NAME_LENGTH - ('-secret-'.length + STEP_POD_NAME_SUFFIX_LENGTH)
-  )}-secret-${uuidv4().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
+  )}-secret-${randomUUID().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
 }
 
 export const MAX_POD_NAME_LENGTH = 63

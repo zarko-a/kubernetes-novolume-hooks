@@ -14,13 +14,16 @@ module.exports = {
       }
     ],
     // Transform ESM modules to CommonJS
-    '^.+\\.(js|mjs)$': ['babel-jest', {
-      presets: [['@babel/preset-env', { targets: { node: 'current' } }]]
-    }]
+    '^.+\\.(js|mjs)$': [
+      'babel-jest',
+      {
+        presets: [['@babel/preset-env', { targets: { node: 'current' } }]]
+      }
+    ]
   },
   transformIgnorePatterns: [
     // Transform these ESM packages
-    'node_modules/(?!(shlex|@kubernetes/client-node|openid-client|oauth4webapi|jose|uuid)/)'
+    'node_modules/(?!(shlex|@kubernetes/client-node|openid-client|oauth4webapi|jose)/)'
   ],
   setupFilesAfterEnv: ['./jest.setup.js']
 }
