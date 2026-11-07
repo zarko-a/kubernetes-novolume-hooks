@@ -33,6 +33,7 @@ import {
   getJobPodName,
   JOB_CONTAINER_NAME
 } from './constants'
+import * as fs from 'fs'
 import { dirname } from 'path'
 import {
   formatCopyStats,
@@ -49,6 +50,11 @@ import {
   resolveGitSafeDirectory
 } from '../k8s/git-safe-directory'
 import { JobSizeError, loadJobTemplate } from '../k8s/job-size'
+import {
+  STEP_CLIENT_DIR,
+  STEP_CLIENT_FILE,
+  stepClientProgram
+} from '../k8s/step-transfer'
 import {
   formatWorkTransfer,
   JOB_WORK_STATUS,
@@ -153,6 +159,9 @@ export async function prepareJob(
       `git safe.directory ${gitSafeDirectory.value === 'true' && !gitWarning ? 'on' : 'off'} ` +
       `(${gitSafeDirectory.source})`
   )
+  // In `_work` before the transfer packs it, so it reaches the job pod with `_work`.
+  const stepClient =
+    transfer.mode === 'http' && installStepClient(runnerWorkspace)
   const work =
     transfer.mode === 'http' ? await serveWork(runnerWorkspace) : undefined
   try {
@@ -166,7 +175,8 @@ export async function prepareJob(
       extension,
       runnerWorkspace,
       work,
-      externals.mode
+      externals.mode,
+      stepClient && work !== undefined
     )
   } finally {
     readAhead.stop()
@@ -198,6 +208,23 @@ function jobTemplate(
       )
     }
     throw error
+  }
+}
+
+// Writes the per-step HTTP client into `_work` on the runner. Returns false, and the steps
+// use the exec path, if it cannot.
+function installStepClient(runnerWorkspace: string): boolean {
+  try {
+    const dir = `${runnerWorkspace}/${STEP_CLIENT_DIR}`
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(`${dir}/${STEP_CLIENT_FILE}`, stepClientProgram())
+    return true
+  } catch (error) {
+    core.warning(
+      `${HOOK_LOG_PREFIX} cannot write the step client (${formatError(error)}); ` +
+        'steps copy _temp through the API server.'
+    )
+    return false
   }
 }
 
@@ -273,7 +300,8 @@ async function prepareJobPod(
   extension: k8s.V1PodTemplateSpec | undefined,
   runnerWorkspace: string,
   work: ServedWork | undefined,
-  externals: ExternalsMode
+  externals: ExternalsMode,
+  stepTransfer: boolean
 ): Promise<void> {
   let createdPod: k8s.V1Pod | undefined = undefined
   const createTimer = new Stopwatch()
@@ -374,7 +402,14 @@ async function prepareJobPod(
     throw new Error(`failed to determine if the pod is alpine: ${message}`)
   }
   core.debug(`Setting isAlpine to ${isAlpine}`)
-  generateResponseFile(responseFile, args, createdPod, isAlpine, serviceNames)
+  generateResponseFile(
+    responseFile,
+    args,
+    createdPod,
+    isAlpine,
+    stepTransfer,
+    serviceNames
+  )
 }
 
 function generateResponseFile(
@@ -382,6 +417,7 @@ function generateResponseFile(
   args: PrepareJobArgs,
   appPod: k8s.V1Pod,
   isAlpine: boolean,
+  stepTransfer: boolean,
   serviceNames?: string[]
 ): void {
   if (!appPod.metadata?.name) {
@@ -389,7 +425,9 @@ function generateResponseFile(
   }
   const response = {
     state: {
-      jobPod: appPod.metadata.name
+      jobPod: appPod.metadata.name,
+      // Read by run_script_step: `http` when steps can sync `_temp` over HTTP.
+      stepTransfer: stepTransfer ? 'http' : 'exec'
     },
     context: {},
     isAlpine

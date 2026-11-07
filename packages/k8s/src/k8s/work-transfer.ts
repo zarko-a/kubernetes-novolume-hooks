@@ -147,6 +147,18 @@ function rootEntries(root: string): string[] {
   return fs.readdirSync(root)
 }
 
+// Whether an Authorization header carries `Bearer <token>`, compared in constant time.
+export function bearerMatches(
+  header: string | undefined,
+  token: string
+): boolean {
+  const presented = Buffer.from(header ?? '')
+  const expected = Buffer.from(`Bearer ${token}`)
+  return (
+    presented.length === expected.length && timingSafeEqual(presented, expected)
+  )
+}
+
 export interface WorkServer {
   port: number
   token: string
@@ -158,7 +170,6 @@ export interface WorkServer {
 // close(). Any other request gets 404 or 401.
 export async function startWorkServer(root: string): Promise<WorkServer> {
   const token = randomBytes(32).toString('hex')
-  const expected = Buffer.from(`Bearer ${token}`)
   const stats: WorkServeStats = {
     requests: 0,
     completed: false,
@@ -174,11 +185,7 @@ export async function startWorkServer(root: string): Promise<WorkServer> {
       response.writeHead(404).end()
       return
     }
-    const presented = Buffer.from(request.headers.authorization ?? '')
-    if (
-      presented.length !== expected.length ||
-      !timingSafeEqual(presented, expected)
-    ) {
+    if (!bearerMatches(request.headers.authorization, token)) {
       response.writeHead(401).end()
       return
     }

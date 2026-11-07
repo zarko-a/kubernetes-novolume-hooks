@@ -10,6 +10,19 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Added
 
+- Each `run:` step syncs `_temp` with the hook over HTTP, in the same exec session as the
+  step, instead of six exec sessions through the API server (mkdir, the copy in, its check,
+  the merge, the copy of `_runner_file_commands` back, its check; ~0.1s each). A small
+  client, written into `_work/_custom_hook/` by `prepare_job` and run with the runner's
+  `node24` (or `node24_alpine` on musl images) from `/__e`, downloads and merges `_temp`
+  before the step's script and uploads `_runner_file_commands` after it succeeds. The hook
+  serves both on an ephemeral port for the length of the step, to requests carrying a
+  one-time token, and accepts only `_runner_file_commands/` entries back. If the client
+  cannot start the step, the hook warns and uses the exec path for that step and the rest
+  of the job; if the upload does not arrive, it copies the file commands back over exec.
+  `HOOK_WORK_TRANSFER=exec` turns it off together with the `_work` transfer. Copies over
+  HTTP are not compared file by file afterwards; tar's exit status and the HTTP status are
+  the check.
 - git trusts the workspace in every step: the hook adds `safe.directory=*` to the job
   container's environment as git config (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`,
   `GIT_CONFIG_VALUE_<n>`, appended after any entries the workflow sets). The workspace is
