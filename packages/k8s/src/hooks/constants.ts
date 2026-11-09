@@ -10,23 +10,40 @@ export function getRunnerPodName(): string {
   return name
 }
 
+// ARC names a runner pod `<scale set>-runner-<5 random characters>`, and that random tail is
+// all that tells two runners of one set apart. Cutting a long name from the end, as upstream
+// did, dropped the tail first: with a scale set name over 41 characters, concurrent jobs got
+// the same job pod name and failed with 409 AlreadyExists. A name that does not fit loses
+// characters from the middle instead, and keeps its last RUNNER_NAME_TAIL_LENGTH.
+export const RUNNER_NAME_TAIL_LENGTH = '-runner-'.length + 5
+
+export function shortenRunnerName(name: string, maxLength: number): string {
+  if (name.length <= maxLength) {
+    return name
+  }
+  const tail = name.slice(-RUNNER_NAME_TAIL_LENGTH)
+  // A pod name's DNS labels must not end in `-` or `.` where the cut falls.
+  const head = name.substring(0, maxLength - tail.length).replace(/[-.]+$/, '')
+  return `${head}${tail}`
+}
+
 export function getJobPodName(): string {
-  return `${getRunnerPodName().substring(
-    0,
+  return `${shortenRunnerName(
+    getRunnerPodName(),
     MAX_POD_NAME_LENGTH - '-workflow'.length
   )}-workflow`
 }
 
 export function getStepPodName(): string {
-  return `${getRunnerPodName().substring(
-    0,
+  return `${shortenRunnerName(
+    getRunnerPodName(),
     MAX_POD_NAME_LENGTH - ('-step-'.length + STEP_POD_NAME_SUFFIX_LENGTH)
   )}-step-${randomUUID().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
 }
 
 export function getSecretName(): string {
-  return `${getRunnerPodName().substring(
-    0,
+  return `${shortenRunnerName(
+    getRunnerPodName(),
     MAX_POD_NAME_LENGTH - ('-secret-'.length + STEP_POD_NAME_SUFFIX_LENGTH)
   )}-secret-${randomUUID().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
 }

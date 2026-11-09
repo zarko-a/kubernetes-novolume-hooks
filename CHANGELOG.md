@@ -107,6 +107,12 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- Job pod, step pod and Secret names keep the runner pod name's unique tail. ARC names a
+  runner pod `<scale set>-runner-<5 random characters>`; upstream cut a long name from the
+  end, so with a scale set name over 41 characters the random part was lost and concurrent
+  jobs on one set collided (409 `AlreadyExists`). A name that does not fit now loses
+  characters from the middle and keeps its last 13 (`-runner-<5>`). Names that fit, as with
+  every scale set name up to 41 characters, are unchanged (`<runner pod>-workflow`).
 - An exec whose stream closes before Kubernetes sends its exit status (the API server or the
   kubelet dropped it) now fails, instead of never settling: the hook exited 0 once nothing
   else was pending, so the runner marked a step that may still have been running as passed.

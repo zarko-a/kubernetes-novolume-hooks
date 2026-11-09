@@ -5,9 +5,21 @@ import {
   getStepPodName,
   JOB_CONTAINER_NAME,
   MAX_POD_NAME_LENGTH,
+  RUNNER_NAME_TAIL_LENGTH,
   RunnerInstanceLabel,
+  shortenRunnerName,
   STEP_POD_NAME_SUFFIX_LENGTH
 } from '../src/hooks/constants'
+
+// A DNS-1123 subdomain, which pod and Secret names must be: dot-separated labels of
+// lowercase letters, digits and `-`, each starting and ending with a letter or digit.
+const DNS_SUBDOMAIN =
+  /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/
+
+// ARC 0.15 runner pod name: `<scale set>-runner-<5 random characters>`.
+function arcRunnerName(scaleSet: string, suffix: string): string {
+  return `${scaleSet}-runner-${suffix}`
+}
 
 describe('constants', () => {
   describe('runner instance label', () => {
@@ -144,6 +156,94 @@ describe('constants', () => {
         )
         expect(actual).toMatch(re)
       }
+    })
+  })
+
+  describe('long runner pod names keep their unique tail', () => {
+    afterEach(() => {
+      delete process.env.ACTIONS_RUNNER_POD_NAME
+    })
+
+    it('leaves a job pod name that fits unchanged, up to exactly 63 characters', () => {
+      for (const length of [14, 41, 53, 54]) {
+        const runner = arcRunnerName('s'.repeat(length - 13), 'ab1cd')
+        expect(runner).toHaveLength(length)
+        process.env.ACTIONS_RUNNER_POD_NAME = runner
+        expect(getJobPodName()).toBe(`${runner}-workflow`)
+      }
+      process.env.ACTIONS_RUNNER_POD_NAME = arcRunnerName(
+        's'.repeat(41),
+        'ab1cd'
+      )
+      expect(getJobPodName()).toHaveLength(MAX_POD_NAME_LENGTH)
+    })
+
+    it('cuts the scale set name, not the random suffix, when the name is too long', () => {
+      for (const scaleSetLength of [42, 50, 63, 120]) {
+        const runner = arcRunnerName('s'.repeat(scaleSetLength), 'xy9z0')
+        process.env.ACTIONS_RUNNER_POD_NAME = runner
+        const name = getJobPodName()
+        expect(name.length).toBeLessThanOrEqual(MAX_POD_NAME_LENGTH)
+        expect(name).toMatch(/^s+-runner-xy9z0-workflow$/)
+        expect(name).toMatch(DNS_SUBDOMAIN)
+      }
+    })
+
+    it('gives two runners of a set with a long name different job pod names', () => {
+      const scaleSet = 'cb-linux-an-unusually-long-scale-set-12gb-4cpu-amd64' // 52 characters
+      const first = arcRunnerName(scaleSet, 'aaaaa')
+      const second = arcRunnerName(scaleSet, 'bbbbb')
+      // Upstream's cut from the end gave both the same name (409 AlreadyExists).
+      const upstream = (runner: string): string =>
+        `${runner.substring(0, MAX_POD_NAME_LENGTH - '-workflow'.length)}-workflow`
+      expect(upstream(first)).toBe(upstream(second))
+
+      process.env.ACTIONS_RUNNER_POD_NAME = first
+      const firstName = getJobPodName()
+      process.env.ACTIONS_RUNNER_POD_NAME = second
+      const secondName = getJobPodName()
+      expect(firstName).not.toBe(secondName)
+      expect(firstName).toBe(
+        'cb-linux-an-unusually-long-scale-set-12gb-runner-aaaaa-workflow'
+      )
+      expect(secondName.endsWith('-runner-bbbbb-workflow')).toBe(true)
+    })
+
+    it('never leaves a dash or dot where the name was cut', () => {
+      // Cut points that fall right after a `-` or a `.` in the scale set name.
+      for (const scaleSet of [
+        `${'s'.repeat(40)}-${'t'.repeat(10)}`,
+        `${'s'.repeat(40)}--${'t'.repeat(10)}`,
+        `${'s'.repeat(40)}.${'t'.repeat(10)}`
+      ]) {
+        process.env.ACTIONS_RUNNER_POD_NAME = arcRunnerName(scaleSet, 'q1w2e')
+        const name = getJobPodName()
+        expect(name).toMatch(DNS_SUBDOMAIN)
+        expect(name).toMatch(/^s+-runner-q1w2e-workflow$/)
+      }
+    })
+
+    it('keeps the tail in step pod and Secret names too', () => {
+      process.env.ACTIONS_RUNNER_POD_NAME = arcRunnerName(
+        's'.repeat(60),
+        'z9y8x'
+      )
+      const step = getStepPodName()
+      const secret = getSecretName()
+      for (const name of [step, secret]) {
+        expect(name.length).toBeLessThanOrEqual(MAX_POD_NAME_LENGTH)
+        expect(name).toMatch(DNS_SUBDOMAIN)
+      }
+      expect(step).toMatch(/-runner-z9y8x-step-[a-f0-9]{8}$/)
+      expect(secret).toMatch(/-runner-z9y8x-secret-[a-f0-9]{8}$/)
+    })
+
+    it('shortenRunnerName keeps exactly the last RUNNER_NAME_TAIL_LENGTH characters', () => {
+      expect(RUNNER_NAME_TAIL_LENGTH).toBe(13)
+      expect(shortenRunnerName('abc', 10)).toBe('abc')
+      expect(shortenRunnerName('0123456789abcdefghijklmnop', 20)).toBe(
+        '0123456defghijklmnop'
+      )
     })
   })
 
