@@ -1,6 +1,5 @@
 const mockExec = jest.fn()
 const mockReadNamespacedPod = jest.fn()
-const mockReadNamespacedJob = jest.fn()
 
 jest.mock('@kubernetes/client-node', () => {
   return {
@@ -8,9 +7,6 @@ jest.mock('@kubernetes/client-node', () => {
       loadFromDefault: jest.fn(),
       makeApiClient: jest.fn().mockImplementation(ApiClass => {
         const name = ApiClass?.name || ApiClass?.toString() || ''
-        if (name.includes('Batch')) {
-          return { readNamespacedJob: mockReadNamespacedJob }
-        }
         if (name.includes('Authorization')) {
           return { createSelfSubjectAccessReview: jest.fn() }
         }
@@ -22,10 +18,7 @@ jest.mock('@kubernetes/client-node', () => {
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
     CoreV1Api: class CoreV1Api {},
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    BatchV1Api: class BatchV1Api {},
-    // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    AuthorizationV1Api: class AuthorizationV1Api {},
-    Log: jest.fn()
+    AuthorizationV1Api: class AuthorizationV1Api {}
   }
 })
 
@@ -48,12 +41,7 @@ jest.mock('../src/k8s/utils', () => {
   }
 })
 
-import {
-  execCpToPod,
-  execCpFromPod,
-  waitForJobToComplete,
-  waitForPodPhases
-} from '../src/k8s'
+import { execCpToPod, execCpFromPod, waitForPodPhases } from '../src/k8s'
 import { PodPhase } from '../src/k8s/utils'
 
 describe('error serialization', () => {
@@ -111,34 +99,6 @@ describe('error serialization', () => {
       await expect(
         execCpFromPod('test-pod', '/workspace/output', '/tmp/dst')
       ).rejects.toThrow('execCpFromPod failed after 30 attempts: 42')
-    })
-  })
-
-  describe('waitForJobToComplete', () => {
-    it('should include Error.message when job fails', async () => {
-      mockReadNamespacedJob.mockResolvedValue({
-        status: { failed: 1 }
-      })
-
-      await expect(waitForJobToComplete('my-job')).rejects.toThrow(
-        'job my-job has failed: job my-job has failed'
-      )
-    })
-
-    it('should include Error.message when API call throws', async () => {
-      mockReadNamespacedJob.mockRejectedValue(new Error('403 Forbidden'))
-
-      await expect(waitForJobToComplete('my-job')).rejects.toThrow(
-        'job my-job has failed: 403 Forbidden'
-      )
-    })
-
-    it('should use String() for non-Error throwables from API', async () => {
-      mockReadNamespacedJob.mockRejectedValue('unexpected API failure')
-
-      await expect(waitForJobToComplete('my-job')).rejects.toThrow(
-        'job my-job has failed: unexpected API failure'
-      )
     })
   })
 

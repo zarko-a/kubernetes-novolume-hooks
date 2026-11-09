@@ -62,7 +62,6 @@ const kc = new k8s.KubeConfig()
 kc.loadFromDefault()
 
 const k8sApi = kc.makeApiClient(k8s.CoreV1Api)
-const k8sBatchV1Api = kc.makeApiClient(k8s.BatchV1Api)
 const k8sAuthorizationV1Api = kc.makeApiClient(k8s.AuthorizationV1Api)
 
 const DEFAULT_WAIT_FOR_POD_TIME_SECONDS = 10 * 60 // 10 min
@@ -79,12 +78,6 @@ export const requiredPermissions = [
     verbs: ['get', 'create'],
     resource: 'pods',
     subresource: 'exec'
-  },
-  {
-    group: '',
-    verbs: ['get', 'list', 'watch'],
-    resource: 'pods',
-    subresource: 'log'
   },
   {
     group: '',
@@ -800,20 +793,6 @@ export async function execCpFromPod(
   }
 }
 
-export async function waitForJobToComplete(jobName: string): Promise<void> {
-  const schedule = new PollSchedule()
-  while (true) {
-    try {
-      if (await isJobSucceeded(jobName)) {
-        return
-      }
-    } catch (error) {
-      throw new Error(`job ${jobName} has failed: ${formatError(error)}`)
-    }
-    await sleep(schedule.next())
-  }
-}
-
 export async function createDockerSecret(
   registry: Registry
 ): Promise<k8s.V1Secret> {
@@ -853,34 +832,6 @@ export async function createDockerSecret(
     namespace: namespace(),
     body: secret
   })
-}
-
-export async function createSecretForEnvs(envs: {
-  [key: string]: string
-}): Promise<string> {
-  const runnerInstanceLabel = new RunnerInstanceLabel()
-
-  const secret = new k8s.V1Secret()
-  const secretName = getSecretName()
-  secret.immutable = true
-  secret.apiVersion = 'v1'
-  secret.metadata = new k8s.V1ObjectMeta()
-  secret.metadata.name = secretName
-
-  secret.metadata.labels = {
-    [runnerInstanceLabel.key]: runnerInstanceLabel.value
-  }
-  secret.kind = 'Secret'
-  secret.data = {}
-  for (const [key, value] of Object.entries(envs)) {
-    secret.data[key] = Buffer.from(value).toString('base64')
-  }
-
-  await k8sApi.createNamespacedSecret({
-    namespace: namespace(),
-    body: secret
-  })
-  return secretName
 }
 
 export async function deleteSecret(name: string): Promise<void> {
@@ -1140,40 +1091,6 @@ async function getPodPhase(name: string): Promise<PodPhase> {
   return podPhase(pod)
 }
 
-async function isJobSucceeded(name: string): Promise<boolean> {
-  const job = await k8sBatchV1Api.readNamespacedJob({
-    name,
-    namespace: namespace()
-  })
-  if (job.status?.failed) {
-    throw new Error(`job ${name} has failed`)
-  }
-  return !!job.status?.succeeded
-}
-
-export async function getPodLogs(
-  podName: string,
-  containerName: string
-): Promise<void> {
-  const log = new k8s.Log(kc)
-  const logStream = new stream.PassThrough()
-  logStream.on('data', chunk => {
-    // use write rather than console.log to prevent double line feed
-    process.stdout.write(chunk)
-  })
-
-  logStream.on('error', err => {
-    process.stderr.write(err.message)
-  })
-
-  await log.log(namespace(), podName, containerName, logStream, {
-    follow: true,
-    pretty: false,
-    timestamps: false
-  })
-  await new Promise(resolve => logStream.on('end', () => resolve(null)))
-}
-
 export async function prunePods(): Promise<void> {
   const podList = await k8sApi.listNamespacedPod({
     namespace: namespace(),
@@ -1188,16 +1105,6 @@ export async function prunePods(): Promise<void> {
       async pod => pod.metadata?.name && (await deletePod(pod.metadata.name))
     )
   )
-}
-
-export async function getPodStatus(
-  name: string
-): Promise<k8s.V1PodStatus | undefined> {
-  const pod = await k8sApi.readNamespacedPod({
-    name,
-    namespace: namespace()
-  })
-  return pod.status
 }
 
 export async function isAuthPermissionsOK(): Promise<boolean> {

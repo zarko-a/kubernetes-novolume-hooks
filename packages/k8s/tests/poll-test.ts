@@ -1,5 +1,4 @@
 const mockReadNamespacedPod = jest.fn()
-const mockReadNamespacedJob = jest.fn()
 const sleeps: number[] = []
 let fakeNow = 0
 
@@ -9,9 +8,6 @@ jest.mock('@kubernetes/client-node', () => {
       loadFromDefault: jest.fn(),
       makeApiClient: jest.fn().mockImplementation(ApiClass => {
         const name = ApiClass?.name || ''
-        if (name.includes('Batch')) {
-          return { readNamespacedJob: mockReadNamespacedJob }
-        }
         return { readNamespacedPod: mockReadNamespacedPod }
       }),
       getContexts: jest.fn().mockReturnValue([{ namespace: 'test-namespace' }])
@@ -20,10 +16,7 @@ jest.mock('@kubernetes/client-node', () => {
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
     CoreV1Api: class CoreV1Api {},
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    BatchV1Api: class BatchV1Api {},
-    // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    AuthorizationV1Api: class AuthorizationV1Api {},
-    Log: jest.fn()
+    AuthorizationV1Api: class AuthorizationV1Api {}
   }
 })
 
@@ -39,7 +32,7 @@ jest.mock('../src/k8s/utils', () => {
   }
 })
 
-import { waitForJobToComplete, waitForPodPhases } from '../src/k8s'
+import { waitForPodPhases } from '../src/k8s'
 import { PodPhase } from '../src/k8s/utils'
 import { PollSchedule } from '../src/k8s/poll'
 
@@ -161,16 +154,5 @@ describe('wait loops', () => {
     )
 
     expect(polls).toBe(401)
-  })
-
-  it('waitForJobToComplete follows the schedule until the Job succeeds', async () => {
-    const statuses = [{}, {}, {}, { succeeded: 1 }]
-    mockReadNamespacedJob.mockImplementation(async () => ({
-      status: statuses.shift()
-    }))
-
-    await waitForJobToComplete('job')
-
-    expect(sleeps).toEqual(EXPECTED_DELAYS.slice(0, 3))
   })
 })

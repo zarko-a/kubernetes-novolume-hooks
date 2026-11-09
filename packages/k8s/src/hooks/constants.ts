@@ -24,14 +24,6 @@ export function getStepPodName(): string {
   )}-step-${randomUUID().substring(0, STEP_POD_NAME_SUFFIX_LENGTH)}`
 }
 
-export function getVolumeClaimName(): string {
-  const name = process.env.ACTIONS_RUNNER_CLAIM_NAME
-  if (!name) {
-    return `${getRunnerPodName()}-work`
-  }
-  return name
-}
-
 export function getSecretName(): string {
   return `${getRunnerPodName().substring(
     0,

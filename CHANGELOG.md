@@ -134,7 +134,7 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   merge starts one `sh` per batch instead of one per file. On an 11k-file tree that cut
   `chmod` from 7.7s to 0.08s and `stat` from 10.1s to 0.06s in a local benchmark. Hashes are
   unchanged: the listings are sorted before hashing.
-- Waiting for the job pod (and a container step's Job) polls after 1s, then 15% longer each
+- Waiting for the job pod polls after 1s, then 15% longer each
   time up to 3s, instead of doubling up to 20s: a pod Running at 16s was noticed at 31s, now
   at 16.7s. The prepare-job timeout counts wall-clock time, API calls included, and its error
   says `timed out after <N>s` instead of `backoff timeout`.
@@ -151,6 +151,11 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Removed
 
+- Code left from upstream's volume-backed `kubernetes` mode, which nothing called: the PVC
+  name (`ACTIONS_RUNNER_CLAIM_NAME`), the `ACTIONS_RUNNER_USE_KUBE_SCHEDULER` switch, and the
+  Job-based container step's helpers (waiting on a Job, the env Secret, following pod logs,
+  reading a pod's status). The startup permission check no longer asks for `pods/log`,
+  which only those log helpers used, and the package README no longer asks for it or a PVC.
 - The `uuid` dependency (Node's `crypto.randomUUID()` replaces it), and `@actions/exec` and
   `@actions/io`, which nothing imported.
 - The Docker hook (`packages/docker`), upstream's GitHub workflows and Dependabot configuration.

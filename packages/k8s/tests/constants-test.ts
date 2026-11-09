@@ -3,7 +3,6 @@ import {
   getRunnerPodName,
   getSecretName,
   getStepPodName,
-  getVolumeClaimName,
   JOB_CONTAINER_NAME,
   MAX_POD_NAME_LENGTH,
   RunnerInstanceLabel,
@@ -87,30 +86,6 @@ describe('constants', () => {
         const actual = getJobPodName()
         expect(actual).toBe(tt.expect)
       }
-    })
-  })
-
-  describe('getVolumeClaimName', () => {
-    it('should throw if ACTIONS_RUNNER_POD_NAME env is not set', () => {
-      delete process.env.ACTIONS_RUNNER_CLAIM_NAME
-      delete process.env.ACTIONS_RUNNER_POD_NAME
-      expect(() => getVolumeClaimName()).toThrow()
-
-      process.env.ACTIONS_RUNNER_POD_NAME = ''
-      expect(() => getVolumeClaimName()).toThrow()
-    })
-
-    it('should return ACTIONS_RUNNER_CLAIM_NAME env if set', () => {
-      const claimName = 'testclaim'
-      process.env.ACTIONS_RUNNER_CLAIM_NAME = claimName
-      process.env.ACTIONS_RUNNER_POD_NAME = 'example'
-      expect(getVolumeClaimName()).toBe(claimName)
-    })
-
-    it('should contain suffix -work if ACTIONS_RUNNER_CLAIM_NAME is not set', () => {
-      delete process.env.ACTIONS_RUNNER_CLAIM_NAME
-      process.env.ACTIONS_RUNNER_POD_NAME = 'example'
-      expect(getVolumeClaimName()).toBe('example-work')
     })
   })
 

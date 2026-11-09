@@ -27,10 +27,7 @@ jest.mock('@kubernetes/client-node', () => {
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
     CoreV1Api: class CoreV1Api {},
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    BatchV1Api: class BatchV1Api {},
-    // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-    AuthorizationV1Api: class AuthorizationV1Api {},
-    Log: jest.fn()
+    AuthorizationV1Api: class AuthorizationV1Api {}
   }
 })
 
