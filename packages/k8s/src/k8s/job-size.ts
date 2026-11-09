@@ -37,10 +37,15 @@ export const JOB_MAX_CPU_ENV = 'HOOK_JOB_MAX_CPU'
 export const JOB_MAX_DISK_ENV = 'HOOK_JOB_MAX_DISK'
 export const JOB_CPU_LIMIT_ENV = 'HOOK_JOB_CPU_LIMIT'
 
-export const JOB_ARCHES = ['amd64', 'arm64'] as const
+// `any` sets no architecture selector, for multi-arch job images. The default stays amd64:
+// an architecture-agnostic default would send amd64-only images to arm64 nodes, where they
+// fail to start.
+export const JOB_ARCHES = ['amd64', 'arm64', 'any'] as const
 export type JobArch = (typeof JOB_ARCHES)[number]
 
 export const DEFAULT_JOB_ARCH: JobArch = 'amd64'
+export const ANY_JOB_ARCH: JobArch = 'any'
+const ARCH_LABEL = 'kubernetes.io/arch'
 export const DEFAULT_JOB_PROFILE = 'standard'
 
 // Pod annotations with the requested values, so right-sizing queries can read them next to
@@ -328,7 +333,7 @@ function resolveSize(jobEnv: Env, limits: JobSizeLimits): JobSize {
       arch = found
     } else {
       problems.push(
-        `${JOB_ARCH_ENV} is "${rawArch}", not ${JOB_ARCHES.join(' or ')}`
+        `${JOB_ARCH_ENV} is "${rawArch}", not ${JOB_ARCHES.slice(0, -1).join(', ')} or ${JOB_ARCHES[JOB_ARCHES.length - 1]}`
       )
     }
   }
@@ -364,7 +369,8 @@ export function profilePath(limits: JobSizeLimits, profile: string): string {
 // The profile's template with the job's size applied. The hook owns the job container's
 // memory and CPU: the profile's values for them are replaced (memory request = limit, never
 // overcommitted; the CPU limit is HOOK_JOB_CPU_LIMIT, or none). The ephemeral-storage request
-// is the profile's unless the job sets HOOK_JOB_DISK. The architecture selector is the job's.
+// is the profile's unless the job sets HOOK_JOB_DISK. The architecture selector is the job's;
+// with `any` there is none, even if the profile has one.
 export function applyJobSize(
   profile: k8s.V1PodTemplateSpec,
   size: JobSize,
@@ -402,10 +408,13 @@ export function applyJobSize(
   }
   job.resources = { ...job.resources, requests, limits: jobLimits }
 
-  template.spec.nodeSelector = {
-    ...template.spec.nodeSelector,
-    'kubernetes.io/arch': size.arch
+  const nodeSelector = { ...template.spec.nodeSelector }
+  if (size.arch === ANY_JOB_ARCH) {
+    delete nodeSelector[ARCH_LABEL]
+  } else {
+    nodeSelector[ARCH_LABEL] = size.arch
   }
+  template.spec.nodeSelector = nodeSelector
 
   template.metadata = template.metadata ?? {}
   template.metadata.annotations = {
@@ -473,4 +482,23 @@ export function loadJobTemplate(
     template: applyJobSize(profile, source.size, source.limits),
     log: formatJobSize(source.size, source.limits)
   }
+}
+
+// True for a job pod built with HOOK_JOB_ARCH=any, whose architecture is the scheduler's choice.
+export function hasAnyJobArch(pod: k8s.V1Pod): boolean {
+  return (
+    pod.metadata?.annotations?.[`${JOB_SIZE_ANNOTATION_PREFIX}arch`] ===
+    ANY_JOB_ARCH
+  )
+}
+
+// `uname -m` output as a Kubernetes architecture name (kubernetes.io/arch).
+export function archFromUname(machine: string): string {
+  const name = machine.trim()
+  const known: Record<string, string> = {
+    x86_64: 'amd64',
+    aarch64: 'arm64',
+    arm64: 'arm64'
+  }
+  return known[name] ?? name
 }

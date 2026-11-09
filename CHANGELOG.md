@@ -37,8 +37,9 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - Per-job sizing: a job asks for its pod's size in the job container's env (`container.env`
   in the workflow), so one runner scale set serves every size. `HOOK_JOB_MEMORY` (request and
   limit, `Mi`/`Gi`) and `HOOK_JOB_CPU` (request, cores or millicores) are required;
-  `HOOK_JOB_DISK` (ephemeral-storage request), `HOOK_JOB_ARCH` (`amd64` by default, or
-  `arm64`) and `HOOK_JOB_PROFILE` (`standard` by default) are optional. The hook builds the
+  `HOOK_JOB_DISK` (ephemeral-storage request), `HOOK_JOB_ARCH` (`amd64` by default, `arm64`,
+  or `any` for a multi-arch image: no architecture selector, and the job log says which
+  architecture the pod ran on) and `HOOK_JOB_PROFILE` (`standard` by default) are optional. The hook builds the
   pod template from `profile-<profile>.yaml` in the runner's `HOOK_JOB_PROFILE_DIR`, sets the
   job container's resources and the `kubernetes.io/arch` node selector, and annotates the pod
   with the requested values (`custom-hook/memory`, `cpu`, `disk`, `arch`, `profile`). The

@@ -49,7 +49,13 @@ import {
   addGitSafeDirectory,
   resolveGitSafeDirectory
 } from '../k8s/git-safe-directory'
-import { JobSizeError, loadJobTemplate } from '../k8s/job-size'
+import {
+  archFromUname,
+  hasAnyJobArch,
+  JOB_ARCH_ENV,
+  JobSizeError,
+  loadJobTemplate
+} from '../k8s/job-size'
 import {
   STEP_CLIENT_DIR,
   STEP_CLIENT_FILE,
@@ -291,6 +297,23 @@ export async function copyWorkToPod(
   hookInfo(formatCopyStats('copy _work to job pod', workStats))
 }
 
+// With HOOK_JOB_ARCH=any the job log says where the pod ran. The runner's Role cannot read
+// Nodes, so the job container reports its own architecture; best effort, it never fails
+// the job (an image without `uname` just gets a line saying so).
+export async function logJobPodArch(podName: string): Promise<void> {
+  try {
+    const machine = await execListing(podName, JOB_CONTAINER_NAME, [
+      'uname',
+      '-m'
+    ])
+    hookInfo(`job pod runs on ${archFromUname(machine)} (${JOB_ARCH_ENV} any)`)
+  } catch (error) {
+    hookInfo(
+      `job pod architecture unknown (${JOB_ARCH_ENV} any): uname -m failed: ${formatError(error)}`
+    )
+  }
+}
+
 async function prepareJobPod(
   args: PrepareJobArgs & { container: JobContainerInfo },
   responseFile: string,
@@ -362,7 +385,10 @@ async function prepareJobPod(
     `job pod Running ${formatSeconds(createTimer.elapsedMs())} after create`
   )
 
-  await copyWorkToPod(createdPod.metadata.name, runnerWorkspace, work)
+  await Promise.all([
+    copyWorkToPod(createdPod.metadata.name, runnerWorkspace, work),
+    hasAnyJobArch(createdPod) && logJobPodArch(createdPod.metadata.name)
+  ])
 
   if (prepareScript) {
     await execPodStep(

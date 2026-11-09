@@ -258,7 +258,7 @@ describe('resolveJobTemplateSource', () => {
     expect(problems).toEqual([
       'HOOK_JOB_MEMORY is "7G", not a quantity in Mi or Gi (e.g. 512Mi, 7Gi, 1.5Gi)',
       'HOOK_JOB_CPU is required',
-      'HOOK_JOB_ARCH is "x86_64", not amd64 or arm64',
+      'HOOK_JOB_ARCH is "x86_64", not amd64, arm64 or any',
       'HOOK_JOB_PROFILE is "gpu", not one this runner allows (standard, podman)'
     ])
   })
