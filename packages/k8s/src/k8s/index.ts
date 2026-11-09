@@ -35,6 +35,7 @@ import {
   TarEntryCounter
 } from './hook-log'
 import { PollSchedule } from './poll'
+import { rejectIfClosedWithoutStatus, trackStatus } from './exec-status'
 import {
   eventsSince,
   FailFastSettings,
@@ -314,6 +315,46 @@ export async function execPodStep(
     core.debug('[execPodStep] About to call exec.exec')
     let ws: HeartbeatWebSocket | null = null
 
+    const status = trackStatus<k8s.V1Status>(async resp => {
+      core.debug(`[execPodStep] execPodStep response: ${JSON.stringify(resp)}`)
+
+      heartbeat.stop()
+
+      // Close WebSocket and wait for it before resolving/rejecting
+      const closeWebSocket = async (): Promise<void> => {
+        const socket = ws
+        if (socket && (socket.readyState === 1 || socket.readyState === 0)) {
+          return new Promise<void>(closeResolve => {
+            const closeTimeout = setTimeout(() => {
+              core.warning(
+                '[execPodStep] WebSocket close timeout, forcing cleanup'
+              )
+              closeResolve()
+            }, 5000)
+
+            socket.once('close', () => {
+              clearTimeout(closeTimeout)
+              core.debug('[execPodStep] WebSocket closed cleanly')
+              closeResolve()
+            })
+            socket.close()
+          })
+        }
+      }
+
+      if (resp.status === 'Success') {
+        core.debug(`[execPodStep] Success, code: ${resp.code}`)
+        await closeWebSocket()
+        resolve(resp.code || 0)
+      } else {
+        core.debug(
+          `[execPodStep] Failure: ${JSON.stringify({ message: resp?.message, details: resp?.details })}`
+        )
+        await closeWebSocket()
+        reject(new Error(resp?.message || 'execPodStep failed'))
+      }
+    })
+
     exec
       .exec(
         namespace(),
@@ -324,54 +365,17 @@ export async function execPodStep(
         process.stderr,
         stdin ?? null,
         false /* tty */,
-        async resp => {
-          core.debug(
-            `[execPodStep] execPodStep response: ${JSON.stringify(resp)}`
-          )
-
-          heartbeat.stop()
-
-          // Close WebSocket and wait for it before resolving/rejecting
-          const closeWebSocket = async (): Promise<void> => {
-            const socket = ws
-            if (
-              socket &&
-              (socket.readyState === 1 || socket.readyState === 0)
-            ) {
-              return new Promise<void>(closeResolve => {
-                const closeTimeout = setTimeout(() => {
-                  core.warning(
-                    '[execPodStep] WebSocket close timeout, forcing cleanup'
-                  )
-                  closeResolve()
-                }, 5000)
-
-                socket.once('close', () => {
-                  clearTimeout(closeTimeout)
-                  core.debug('[execPodStep] WebSocket closed cleanly')
-                  closeResolve()
-                })
-                socket.close()
-              })
-            }
-          }
-
-          if (resp.status === 'Success') {
-            core.debug(`[execPodStep] Success, code: ${resp.code}`)
-            await closeWebSocket()
-            resolve(resp.code || 0)
-          } else {
-            core.debug(
-              `[execPodStep] Failure: ${JSON.stringify({ message: resp?.message, details: resp?.details })}`
-            )
-            await closeWebSocket()
-            reject(new Error(resp?.message || 'execPodStep failed'))
-          }
-        }
+        status.callback
       )
       .then(websocket => {
         core.debug('[execPodStep] exec.exec resolved, ws object received')
         ws = websocket
+        rejectIfClosedWithoutStatus(
+          ws,
+          status.received,
+          reject,
+          `command ${command[0]} in ${podName}`
+        )
         if (ws) {
           heartbeat.start(ws, reject)
         } else {
@@ -427,6 +431,14 @@ export async function execListing(
   })
 
   await new Promise<void>((resolve, reject) => {
+    const status = trackStatus<k8s.V1Status>(resp => {
+      core.debug(`execListing response: ${JSON.stringify(resp)}`)
+      if (resp.status === 'Success') {
+        resolve()
+      } else {
+        reject(new Error(resp?.message || 'listing in the job pod failed'))
+      }
+    })
     exec
       .exec(
         namespace(),
@@ -437,14 +449,15 @@ export async function execListing(
         process.stderr,
         null,
         false /* tty */,
-        resp => {
-          core.debug(`execListing response: ${JSON.stringify(resp)}`)
-          if (resp.status === 'Success') {
-            resolve()
-          } else {
-            reject(new Error(resp?.message || 'listing in the job pod failed'))
-          }
-        }
+        status.callback
+      )
+      .then(ws =>
+        rejectIfClosedWithoutStatus(
+          ws,
+          status.received,
+          reject,
+          'listing in the job pod'
+        )
       )
       .catch(e => reject(e))
   })
@@ -657,6 +670,9 @@ export async function execCpToPod(
       const readStream = tar.pack(runnerPath, { map: counter.map })
       const errStream = collectingStream()
       await new Promise((resolve, reject) => {
+        const status = trackStatus(
+          settleCopyExec(description, errStream, resolve, reject)
+        )
         exec
           .exec(
             namespace(),
@@ -667,7 +683,15 @@ export async function execCpToPod(
             errStream.stream,
             readStream,
             false,
-            settleCopyExec(description, errStream, resolve, reject)
+            status.callback
+          )
+          .then(ws =>
+            rejectIfClosedWithoutStatus(
+              ws,
+              status.received,
+              reject,
+              description
+            )
           )
           .catch(e => reject(e))
       })
@@ -744,6 +768,9 @@ export async function execCpFromPod(
       extracted.catch(() => undefined)
 
       await new Promise((resolve, reject) => {
+        const status = trackStatus(
+          settleCopyExec(description, errStream, resolve, reject)
+        )
         exec
           .exec(
             namespace(),
@@ -754,7 +781,15 @@ export async function execCpFromPod(
             errStream.stream,
             null,
             false,
-            settleCopyExec(description, errStream, resolve, reject)
+            status.callback
+          )
+          .then(ws =>
+            rejectIfClosedWithoutStatus(
+              ws,
+              status.received,
+              reject,
+              description
+            )
           )
           .catch(e => reject(e))
       })

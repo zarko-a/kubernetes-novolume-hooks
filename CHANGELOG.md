@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. The project uses
 [semantic versioning](https://semver.org/).
 
 Forked from [actions/runner-container-hooks](https://github.com/actions/runner-container-hooks)
-`main` at `d4731a4`. Last reviewed upstream commit: `d4731a4`.
+`main` at `d4731a4`. Last reviewed upstream commit: `d4731a4` (upstream `main`, 2026-11-09).
 
 ## [Unreleased]
 
@@ -107,6 +107,13 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- An exec whose stream closes before Kubernetes sends its exit status (the API server or the
+  kubelet dropped it) now fails, instead of never settling: the hook exited 0 once nothing
+  else was pending, so the runner marked a step that may still have been running as passed.
+  A step fails with `the exec stream closed before the command reported an exit status`; a
+  copy counts it as a failed attempt and retries. Reported upstream in
+  actions/runner-container-hooks#449 (open when this was written); written here for every
+  exec the hook runs, not only steps.
 - No `DeprecationWarning` lines in the job log. `Buffer() is deprecated` (DEP0005) came from
   stream-buffers, which the copies used to collect the exec's stderr; a small stream on
   Node's built-ins replaces it. `punycode` (DEP0040) and `url.parse()` (DEP0169) came from
