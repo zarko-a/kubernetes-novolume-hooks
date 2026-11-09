@@ -19,7 +19,10 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
   serves both on an ephemeral port for the length of the step, to requests carrying a
   one-time token, and accepts only `_runner_file_commands/` entries back. If the client
   cannot start the step, the hook warns and uses the exec path for that step and the rest
-  of the job; if the upload does not arrive, it copies the file commands back over exec.
+  of the job; a job container the runner has no Node.js for (a musl image on arm64: the
+  runner ships `node24_alpine` for x64 only) takes the exec path the same way, with an info
+  line instead of the warning. If the upload does not arrive, it copies the file commands
+  back over exec.
   `HOOK_WORK_TRANSFER=exec` turns it off together with the `_work` transfer. Copies over
   HTTP are not compared file by file afterwards; tar's exit status and the HTTP status are
   the check.

@@ -30,6 +30,7 @@ import { mergeTempCommand } from '../src/k8s/utils'
 import {
   formatStepTransfer,
   STEP_CLIENT_FAILED_EXIT,
+  STEP_CLIENT_NO_NODE_EXIT,
   stepClient,
   stepClientProgram,
   stepCommand,
@@ -313,7 +314,7 @@ describe('per-step _temp sync', () => {
     expect(server.stats.started).toBe(false)
   })
 
-  it('stops before the step when there is no node in the externals', async () => {
+  it('stops quietly before the client and the step when there is no node in the externals', async () => {
     fs.rmSync(path.join(externals, 'node24'), { recursive: true })
     write(path.join(runnerTemp, 'step.sh'), `touch ${scratch}/step-ran\n`)
     const result = await run(
@@ -321,8 +322,24 @@ describe('per-step _temp sync', () => {
       ['-c', command(`${jobWork}/_temp/step.sh`)],
       {}
     )
-    expect(result.code).toBe(STEP_CLIENT_FAILED_EXIT)
-    expect(result.stderr).toMatch(/^\[custom-hook\] _temp download failed: /)
+    expect(result.code).toBe(STEP_CLIENT_NO_NODE_EXIT)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('')
+    expect(fs.existsSync(`${scratch}/step-ran`)).toBe(false)
+    expect(server.stats.started).toBe(false)
+  })
+
+  it('treats a node that is not executable like a missing one', async () => {
+    fs.rmSync(path.join(externals, 'node24'), { recursive: true })
+    write(path.join(externals, 'node24/bin/node'), '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(path.join(externals, 'node24/bin/node'), 0o644)
+    write(path.join(runnerTemp, 'step.sh'), `touch ${scratch}/step-ran\n`)
+    const result = await run(
+      'sh',
+      ['-c', command(`${jobWork}/_temp/step.sh`)],
+      {}
+    )
+    expect(result.code).toBe(STEP_CLIENT_NO_NODE_EXIT)
     expect(fs.existsSync(`${scratch}/step-ran`)).toBe(false)
   })
 

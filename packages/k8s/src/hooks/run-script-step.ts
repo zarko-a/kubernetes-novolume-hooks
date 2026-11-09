@@ -30,6 +30,7 @@ import {
 import {
   formatStepTransfer,
   STEP_CLIENT_DIR,
+  STEP_CLIENT_NO_NODE_EXIT,
   StepServer,
   stepCommand,
   startStepServer,
@@ -201,7 +202,13 @@ async function runStepOverHttp(
     await execPodStep(['sh', '-c', command], jobPod, JOB_CONTAINER_NAME)
   } catch (err) {
     if (!server.stats.started) {
-      return fallBack(workdir, formatError(err))
+      const message = formatError(err)
+      if (
+        new RegExp(`exit code ${STEP_CLIENT_NO_NODE_EXIT}\\b`).test(message)
+      ) {
+        return fallBack(workdir, message, false)
+      }
+      return fallBack(workdir, message)
     }
     removeRunScript(runnerPath)
     const message = formatError(err)
@@ -248,11 +255,21 @@ async function runStepOverHttp(
   return true
 }
 
-function fallBack(workdir: string, reason: string): false {
-  core.warning(
-    `${HOOK_LOG_PREFIX} could not start the step with _temp over HTTP (${reason}); ` +
-      'copying _temp through the API server for this and the later steps'
-  )
+// `warn` is false for the one expected case, a job container the runner has no Node.js for
+// (musl on arm64): the job is fine, so an info line says why its steps take the exec path.
+function fallBack(workdir: string, reason: string, warn = true): false {
+  if (warn) {
+    core.warning(
+      `${HOOK_LOG_PREFIX} could not start the step with _temp over HTTP (${reason}); ` +
+        'copying _temp through the API server for this and the later steps'
+    )
+  } else {
+    hookInfo(
+      "_temp goes through the API server in this job: the runner's externals have no " +
+        "Node.js for this container's C library and architecture (the runner ships a musl " +
+        'build for x64 only)'
+    )
+  }
   try {
     fs.writeFileSync(`${workdir}/${STEP_CLIENT_DIR}/${STEP_HTTP_OFF}`, reason)
   } catch (error) {

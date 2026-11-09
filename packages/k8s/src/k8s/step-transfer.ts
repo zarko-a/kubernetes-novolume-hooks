@@ -34,6 +34,13 @@ export const JOB_STEP_CLIENT = `/__w/${STEP_CLIENT_DIR}/${STEP_CLIENT_FILE}`
 // hook trusts: a step's own script may exit 213 too.
 export const STEP_CLIENT_FAILED_EXIT = 213
 
+// The combined command exits with this, before the client and the script, when the runner's
+// externals have no Node.js for the job container: the runner ships a musl build
+// (`node24_alpine`) for x64 only, so a musl image on arm64 has none. That is expected, not a
+// failure, so the hook says so once and uses the exec path. As with 213, the hook believes
+// this code only while the server's `started` flag is false.
+export const STEP_CLIENT_NO_NODE_EXIT = 214
+
 const COMMANDS_DIR = '_runner_file_commands'
 
 export interface StepServeStats {
@@ -336,8 +343,9 @@ export interface StepCommandOptions {
 // The one shell command an exec session runs for a step: the client's `down`, the step's
 // script (`sh -e <script>`, as the exec path runs it), and on success the client's `up`.
 // The client runs with the runner's node24 from `/__e`, the Alpine build when the image uses
-// musl. Exits with the script's exit code, or STEP_CLIENT_FAILED_EXIT before the script runs
-// if the client failed. Client errors go to the step's stderr, prefixed like the hook's lines.
+// musl. Exits with the script's exit code, or before the script runs with
+// STEP_CLIENT_NO_NODE_EXIT (silently) if that node is missing, or STEP_CLIENT_FAILED_EXIT if
+// the client failed. Client errors go to the step's stderr, prefixed like the hook's lines.
 export function stepCommand(options: StepCommandOptions): string {
   const q = shlex.quote
   const client = q(options.client ?? JOB_STEP_CLIENT)
@@ -346,6 +354,7 @@ export function stepCommand(options: StepCommandOptions): string {
     'hook_musl=',
     'for f in /lib/ld-musl-*; do [ -e "$f" ] && hook_musl=_alpine; done',
     `hook_node=${q(options.externals ?? '/__e')}/node24$hook_musl/bin/node`,
+    `[ -x "$hook_node" ] || exit ${STEP_CLIENT_NO_NODE_EXIT}`,
     `if ! hook_err=$(${auth} HOOK_STEP_UNPACK=${q(options.unpack)} HOOK_STEP_MERGE=${q(options.merge)} "$hook_node" ${client} down 2>&1 >/dev/null); then`,
     `  echo "${HOOK_LOG_PREFIX} _temp download failed: $hook_err" >&2`,
     `  exit ${STEP_CLIENT_FAILED_EXIT}`,

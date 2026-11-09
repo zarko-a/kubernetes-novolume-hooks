@@ -187,6 +187,77 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(execPathRan()).toBe(true)
   })
 
+  it('falls back without a warning, and stays there, when the container has no node for the client', async () => {
+    serverStats = stats({ started: false, upCompleted: false })
+    mockExecPodStep.mockImplementation(async (command: string[]) => {
+      if (isHttpStep(command)) {
+        throw new Error(
+          'command terminated with non-zero exit code: command terminated with exit code 214'
+        )
+      }
+      return 0
+    })
+
+    await runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+
+    expect(mockWarning).not.toHaveBeenCalled()
+    expect(mockInfo).toHaveBeenCalledWith(
+      "[custom-hook] _temp goes through the API server in this job: the runner's " +
+        "externals have no Node.js for this container's C library and architecture " +
+        '(the runner ships a musl build for x64 only)'
+    )
+    expect(execPathRan()).toBe(true)
+    expect(mockExecCpFromPod).toHaveBeenCalled()
+    const scripts = mockExecPodStep.mock.calls.filter(
+      ([c]) => c[0] === 'sh' && c[1] === '-e'
+    )
+    expect(scripts).toHaveLength(1)
+    expect(fs.existsSync(path.join(work, '_custom_hook/step-http-off'))).toBe(
+      true
+    )
+
+    jest.clearAllMocks()
+    await runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    expect(mockStartStepServer).not.toHaveBeenCalled()
+    expect(mockInfo).not.toHaveBeenCalledWith(
+      expect.stringContaining('have no Node.js')
+    )
+    expect(execPathRan()).toBe(true)
+  })
+
+  it('fails a started step that exits 214 itself, without the exec path', async () => {
+    serverStats = stats({ upCompleted: false, upRequestedAt: undefined })
+    mockExecPodStep.mockRejectedValue(
+      new Error('command terminated with exit code 214')
+    )
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      'failed to run script step: command terminated with exit code 214'
+    )
+    expect(execPathRan()).toBe(false)
+    expect(mockInfo).not.toHaveBeenCalledWith(
+      expect.stringContaining('have no Node.js')
+    )
+  })
+
+  it('still warns for an exit code that only starts with 214', async () => {
+    serverStats = stats({ started: false, upCompleted: false })
+    mockExecPodStep.mockImplementation(async (command: string[]) => {
+      if (isHttpStep(command)) {
+        throw new Error('command terminated with exit code 2140')
+      }
+      return 0
+    })
+
+    await runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('could not start the step with _temp over HTTP')
+    )
+  })
+
   it('falls back when the runner pod IP is unknown', async () => {
     mockRunnerPodIp.mockReturnValue(undefined)
 
