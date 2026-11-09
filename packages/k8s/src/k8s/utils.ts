@@ -31,6 +31,21 @@ export const CONTAINER_VOLUMES: k8s.V1VolumeMount[] = [
   }
 ]
 
+// `/github/workflow` (`GITHUB_EVENT_PATH` is `/github/workflow/event.json`) and `/github/home`
+// are links into `_temp`, where the runner writes them and where every step's `_temp` sync
+// updates them, so the job container always sees the current files. fs-init creates them in
+// the `/github` volume (mounted at `githubDir`); the absolute targets resolve in the job
+// container. Upstream copied the two directories once, and only for jobs that declared
+// `container.volumes` (actions/runner-container-hooks#330), so other jobs had no event file.
+// `ln -sfn` replaces an existing link, so a pod template's postStart that creates the same
+// links still works.
+export function githubLinkCommands(githubDir: string): string[] {
+  return [
+    `ln -sfn /__w/_temp/_github_workflow ${githubDir}/workflow`,
+    `ln -sfn /__w/_temp/_github_home ${githubDir}/home`
+  ]
+}
+
 export function prepareJobScript(userVolumeMounts: Mount[]): {
   containerPath: string
   runnerPath: string
@@ -39,8 +54,6 @@ export function prepareJobScript(userVolumeMounts: Mount[]): {
 
   const content = `#!/bin/sh -l
 set -e
-cp -R /__w/_temp/_github_home /github/home
-cp -R /__w/_temp/_github_workflow /github/workflow
 mkdir -p ${mountDirs}
 `
 

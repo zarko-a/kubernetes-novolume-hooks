@@ -18,6 +18,7 @@ import {
   mergePodSpecWithOptions,
   mergeObjectMeta,
   fixArgs,
+  githubLinkCommands,
   listDirAllCommand,
   sleep,
   EXTERNALS_VOLUME_NAME,
@@ -141,6 +142,7 @@ export async function createJobPod(
     'umask 0002',
     'mkdir -p /mnt/work',
     'mkdir -p /mnt/github',
+    ...githubLinkCommands('/mnt/github'),
     ...externalsInitCommands(externals)
   ]
 

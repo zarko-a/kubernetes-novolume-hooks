@@ -20,7 +20,13 @@ jest.mock('@kubernetes/client-node', () => {
 })
 
 import { createJobPod } from '../src/k8s'
-import { CONTAINER_VOLUMES } from '../src/k8s/utils'
+import { CONTAINER_VOLUMES, prepareJobScript } from '../src/k8s/utils'
+
+// The postStart our pod templates used as the workaround for upstream #330. Kept here
+// verbatim so the test proves fs-init's links and the template's coexist.
+const TEMPLATE_POST_START = `mkdir -p /github && \\
+ln -sfn /__w/_temp/_github_workflow /github/workflow && \\
+ln -sfn /__w/_temp/_github_home /github/home`
 
 describe('job pod spec', () => {
   beforeEach(() => {
@@ -114,6 +120,119 @@ describe('job pod spec', () => {
     // The token reaches curl through the env, not the command line in the pod spec.
     expect(script).not.toContain('secret-token')
     expect(script).toContain('"Authorization: Bearer $HOOK_WORK_TOKEN"')
+  })
+
+  describe('/github links (upstream #330)', () => {
+    // fs-init's commands that touch the /github volume, run for real with /mnt pointed at a
+    // scratch directory.
+    function runGithubPart(script: string, root: string): void {
+      const part = script
+        .split(' && ')
+        .filter(
+          p =>
+            p.startsWith('umask') ||
+            p.startsWith('mkdir -p /mnt/github') ||
+            p.startsWith('ln ')
+        )
+        .join(' && ')
+        .split('/mnt/')
+        .join(`${root}/`)
+      execFileSync('sh', ['-c', `umask 0022 && ${part}`])
+    }
+
+    it('fs-init links /github/workflow and /github/home into _temp', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-init-github-'))
+      try {
+        runGithubPart(await fsInitScript(), root)
+        expect(fs.readlinkSync(path.join(root, 'github/workflow'))).toBe(
+          '/__w/_temp/_github_workflow'
+        )
+        expect(fs.readlinkSync(path.join(root, 'github/home'))).toBe(
+          '/__w/_temp/_github_home'
+        )
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('a template postStart that creates the same links still succeeds', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-init-github-'))
+      try {
+        runGithubPart(await fsInitScript(), root)
+        execFileSync('sh', [
+          '-c',
+          TEMPLATE_POST_START.split('/github').join(`${root}/github`)
+        ])
+        expect(fs.readdirSync(path.join(root, 'github')).sort()).toEqual([
+          'home',
+          'workflow'
+        ])
+        expect(fs.readlinkSync(path.join(root, 'github/workflow'))).toBe(
+          '/__w/_temp/_github_workflow'
+        )
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('the links resolve to the live _temp files, not a copy', async () => {
+      // Same layout as the job container, under a scratch root: links made by the same
+      // commands, with targets rewritten to the scratch root.
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-init-github-'))
+      try {
+        const script = (await fsInitScript())
+          .split('/__w/')
+          .join(`${root}/__w/`)
+        runGithubPart(script, root)
+        const workflow = path.join(root, '__w/_temp/_github_workflow')
+        fs.mkdirSync(workflow, { recursive: true })
+        fs.writeFileSync(path.join(workflow, 'event.json'), '{"a":1}')
+        const eventPath = path.join(root, 'github/workflow/event.json')
+        expect(fs.readFileSync(eventPath, 'utf8')).toBe('{"a":1}')
+        // A later step's _temp sync rewrites the file; the job container sees the new one.
+        fs.writeFileSync(path.join(workflow, 'event.json'), '{"a":2}')
+        expect(fs.readFileSync(eventPath, 'utf8')).toBe('{"a":2}')
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('fs-init creates the links on the HTTP transfer path too, before the download', async () => {
+      const pod = await createJobPod(
+        'runner-abc-workflow',
+        { name: 'job', image: 'alpine' },
+        undefined,
+        undefined,
+        undefined,
+        { url: 'http://10.0.0.7:4567/work', token: 'secret-token' }
+      )
+      const script = pod.spec?.initContainers?.find(c => c.name === 'fs-init')
+        ?.command?.[2] as string
+      const link = script.indexOf('ln -sfn /__w/_temp/_github_workflow')
+      expect(link).toBeGreaterThan(script.indexOf('mkdir -p /mnt/github'))
+      expect(link).toBeLessThan(script.indexOf('curl'))
+    })
+
+    it('the prepare script for container.volumes no longer copies /github', () => {
+      process.env['RUNNER_TEMP'] = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'prepare-')
+      )
+      try {
+        const { runnerPath } = prepareJobScript([
+          { sourceVolumePath: '/a', targetVolumePath: '/data', readOnly: false }
+        ])
+        const content = fs.readFileSync(runnerPath, 'utf8')
+        expect(content).not.toContain('cp ')
+        expect(content).not.toContain('/github')
+        expect(content).toContain('mkdir -p /data')
+      } finally {
+        fs.rmSync(process.env['RUNNER_TEMP'] as string, {
+          recursive: true,
+          force: true
+        })
+        delete process.env['RUNNER_TEMP']
+      }
+    })
   })
 
   describe('externals', () => {

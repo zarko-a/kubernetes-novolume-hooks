@@ -107,6 +107,13 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- `/github/workflow` and `/github/home` exist in every job container: `fs-init` links them to
+  `/__w/_temp/_github_workflow` and `/__w/_temp/_github_home` in the `/github` volume, so
+  `GITHUB_EVENT_PATH` (`/github/workflow/event.json`) is there and always current. Upstream
+  copied the two directories once, and only for jobs that declared `container.volumes`
+  (actions/runner-container-hooks#330); other jobs had no event file, and the copy went
+  stale as steps changed `_temp`. A pod template `postStart` that creates the same links,
+  the usual workaround, keeps working.
 - Job pod, step pod and Secret names keep the runner pod name's unique tail. ARC names a
   runner pod `<scale set>-runner-<5 random characters>`; upstream cut a long name from the
   end, so with a scale set name over 41 characters the random part was lost and concurrent
