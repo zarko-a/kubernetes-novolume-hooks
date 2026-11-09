@@ -107,6 +107,11 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ### Fixed
 
+- A pod template (`ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE`) that declares `initContainers`
+  adds them after the hook's `fs-init` instead of replacing it. Replacing it left the job
+  pod without `_work`, `/__e` and `/github`, and every job failed
+  (actions/runner-container-hooks#347). A template init container named `fs-init` fails the
+  job with an error saying to rename it.
 - `/github/workflow` and `/github/home` exist in every job container: `fs-init` links them to
   `/__w/_temp/_github_workflow` and `/__w/_temp/_github_home` in the `/github` volume, so
   `GITHUB_EVENT_PATH` (`/github/workflow/event.json`) is there and always current. Upstream

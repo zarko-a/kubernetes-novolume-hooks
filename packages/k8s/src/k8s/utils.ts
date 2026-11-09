@@ -229,6 +229,11 @@ export function mergePodSpecWithOptions(
     } else if (key === 'volumes' && value) {
       const volumes = value as k8s.V1Volume[]
       base.volumes = mergeLists(base.volumes, volumes)
+    } else if (key === 'initContainers' && value) {
+      base.initContainers = mergeInitContainers(
+        base.initContainers,
+        value as k8s.V1Container[]
+      )
     } else {
       base[key] = value
     }
@@ -288,6 +293,23 @@ export enum PodPhase {
   FAILED = 'Failed',
   UNKNOWN = 'Unknown',
   COMPLETED = 'Completed'
+}
+
+// A template's init containers run after the hook's own (`fs-init`, which sets up `_work`,
+// `/__e` and `/github`). Replacing them, as upstream did, left every job pod without its
+// workspace (actions/runner-container-hooks#347).
+export function mergeInitContainers(
+  base: k8s.V1Container[] | undefined,
+  from: k8s.V1Container[]
+): k8s.V1Container[] {
+  const own = new Set((base ?? []).map(c => c.name))
+  const clashes = from.filter(c => own.has(c.name)).map(c => c.name)
+  if (clashes.length) {
+    throw new Error(
+      `the pod template's init container name ${clashes.join(', ')} is used by the hook; rename it in the template`
+    )
+  }
+  return [...(base ?? []), ...from]
 }
 
 function mergeLists<T>(base?: T[], from?: T[]): T[] {
