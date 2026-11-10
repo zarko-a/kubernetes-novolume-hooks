@@ -8,6 +8,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-09
+
 ### Added
 
 - Each `run:` step syncs `_temp` with the hook over HTTP, in the same exec session as the

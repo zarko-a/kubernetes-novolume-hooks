@@ -8,8 +8,8 @@ with no volume shared between the runner pod and the job pod.
 
 ## Status
 
-Under development and not ready for use. There are no releases yet, and contributions are not
-being accepted while the design settles. Changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
+1.0.0 is the first release, and the author runs it in production CI. Contributions are not
+being accepted yet. Changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Relationship to upstream
 
