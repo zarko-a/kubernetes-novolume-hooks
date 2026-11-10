@@ -86,8 +86,13 @@ function completedExec(status: {
     const ws = new FakeSocket()
     const callback = args[8] as StatusCallback
     setImmediate(() => {
+      // As @kubernetes/client-node does on the status frame: it ends the caller's stream,
+      // but never process.stdout, which execPodStep passes. Ending that would break every
+      // later test in this Jest worker that writes to stdout.
       const stdout = args[4] as Writable | null
-      stdout?.end()
+      if (stdout && stdout !== process.stdout) {
+        stdout.end()
+      }
       callback(status)
       ws.dropped()
     })

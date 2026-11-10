@@ -8,6 +8,13 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+### Fixed
+
+- A unit test's mock exec ended `process.stdout`, which the real `@kubernetes/client-node`
+  never does. Later test files in the same Jest worker then crashed it with
+  `ERR_STREAM_WRITE_AFTER_END` (Jest re-ran them, so the suite still passed), and a run with
+  `--runInBand` failed. Tests only; the hook bundle is unchanged.
+
 ## [1.0.0] - 2026-11-09
 
 ### Added
