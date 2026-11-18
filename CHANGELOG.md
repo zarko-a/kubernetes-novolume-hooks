@@ -8,6 +8,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-18
+
 ### Added
 
 - `run:` steps survive a dropped exec connection. The step runs detached in the job pod under
