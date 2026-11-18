@@ -1,4 +1,4 @@
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import * as fs from 'fs'
 import * as http from 'http'
 import * as os from 'os'
@@ -36,6 +36,7 @@ import {
   stepServerUrl,
   startStepServer
 } from '../src/k8s/step-transfer'
+import { stepLaunchCommand, stepRunner } from '../src/k8s/step-supervisor'
 
 function tempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -104,7 +105,13 @@ describe('stepClient source', () => {
   it('is written as a program that calls it with node globals', () => {
     const program = stepClientProgram()
     expect(program).toContain(stepClient.toString())
-    expect(program).toMatch(/\(require, process\.argv\[2\], process\.env, /)
+    expect(program).toContain(stepRunner.toString())
+    expect(program).toContain(
+      'stepClient(require, process.argv[2], process.env, hookExit);'
+    )
+    expect(program).toContain(
+      'stepRunner(require, process.argv.slice(2), process.env, hookExit);'
+    )
   })
 })
 
@@ -341,6 +348,111 @@ describe('per-step _temp sync', () => {
     expect(fs.existsSync(`${scratch}/step-ran`)).toBe(false)
   })
 
+  function launch(script: string, id = 'step1'): string {
+    return stepLaunchCommand({
+      externals,
+      missingNodeExit: STEP_CLIENT_NO_NODE_EXIT,
+      client: clientFile,
+      dir: path.join(jobWork, '_custom_hook/steps', id),
+      command: command(script),
+      url,
+      token: server.token,
+      orphanSeconds: 15,
+      outputLimitMb: 2048
+    })
+  }
+
+  it('runs the whole step detached: _temp down, the script, the file commands up', async () => {
+    write(
+      path.join(runnerTemp, 'step.sh'),
+      `echo "step out"\necho "step err" >&2\necho "ran" > ${jobWork}/_temp/_runner_file_commands/set_output_9\n`
+    )
+    const result = await run(
+      'sh',
+      ['-c', launch(`${jobWork}/_temp/step.sh`)],
+      {}
+    )
+    expect(result).toEqual({
+      code: 0,
+      stdout: 'step out\n',
+      stderr: 'step err\n'
+    })
+    expect(
+      read(path.join(runnerTemp, '_runner_file_commands/set_output_9'))
+    ).toBe('ran\n')
+    expect(server.stats).toMatchObject({
+      contacted: true,
+      started: true,
+      upCompleted: true
+    })
+  }, 20000)
+
+  it('finishes the step and its upload after the launch session is killed', async () => {
+    write(
+      path.join(runnerTemp, 'step.sh'),
+      `i=0; while [ $i -lt 20 ]; do echo "line $i"; i=$((i+1)); sleep 0.05; done\n` +
+        `echo "late" > ${jobWork}/_temp/_runner_file_commands/set_output_9\n`
+    )
+    let seen = ''
+    const child = spawn('sh', ['-c', launch(`${jobWork}/_temp/step.sh`)], {
+      env: { PATH: process.env.PATH as string },
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    child.stdout.on('data', (chunk: Buffer) => {
+      seen += chunk.toString()
+    })
+    const exited = new Promise(resolve => child.on('exit', resolve))
+    while (!seen.includes('line 2')) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    // `exec` in the launch makes sh the client itself: this is the session's process.
+    child.kill('SIGKILL')
+    await exited
+    const resumed = await run(
+      process.execPath,
+      [
+        clientFile,
+        'follow',
+        path.join(jobWork, '_custom_hook/steps/step1'),
+        String(Buffer.byteLength(seen)),
+        '0'
+      ],
+      {}
+    )
+    expect(seen + resumed.stdout).toBe(
+      Array.from({ length: 20 }, (_, i) => `line ${i}\n`).join('')
+    )
+    expect(resumed.code).toBe(0)
+    expect(
+      read(path.join(runnerTemp, '_runner_file_commands/set_output_9'))
+    ).toBe('late\n')
+  }, 20000)
+
+  it('removes the previous step directory at the next launch', async () => {
+    write(path.join(runnerTemp, 'step.sh'), 'true\n')
+    await run('sh', ['-c', launch(`${jobWork}/_temp/step.sh`, 'first')], {})
+    await run('sh', ['-c', launch(`${jobWork}/_temp/step.sh`, 'second')], {})
+    expect(fs.readdirSync(path.join(jobWork, '_custom_hook/steps'))).toEqual([
+      'second'
+    ])
+  }, 20000)
+
+  it('stops quietly before the supervisor when there is no node in the externals', async () => {
+    fs.rmSync(path.join(externals, 'node24'), { recursive: true })
+    write(path.join(runnerTemp, 'step.sh'), `touch ${scratch}/step-ran\n`)
+    const result = await run(
+      'sh',
+      ['-c', launch(`${jobWork}/_temp/step.sh`)],
+      {}
+    )
+    expect(result).toEqual({
+      code: STEP_CLIENT_NO_NODE_EXIT,
+      stdout: '',
+      stderr: ''
+    })
+    expect(server.stats.contacted).toBe(false)
+  })
+
   it('reports an upload failure on stderr and keeps the step exit code', async () => {
     write(path.join(runnerTemp, 'step.sh'), 'echo "ok"\n')
     const env = clientEnv()
@@ -374,6 +486,7 @@ describe('formatStepTransfer', () => {
   it('names both directions', () => {
     expect(
       formatStepTransfer({
+        contacted: true,
         downFiles: 12,
         downBytes: 10240,
         downMs: 40,

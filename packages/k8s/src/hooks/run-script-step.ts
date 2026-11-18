@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import * as fs from 'fs'
+import { randomBytes } from 'crypto'
+import * as stream from 'stream'
 import * as core from '@actions/core'
 import { RunScriptStepArgs } from 'hooklib'
 import {
@@ -7,9 +9,26 @@ import {
   execCpToPod,
   execPodStep,
   extractToPodCommand,
+  jobContainerEnded,
   reportPodTrouble,
   troubleWaitMs
 } from '../k8s'
+import { execExitCode } from '../k8s/exec-status'
+import {
+  ExecSession,
+  installStepCancel,
+  JobContainerEndedError,
+  killAbandonedStep,
+  positiveSetting,
+  runDetachedStep
+} from '../k8s/step-follow'
+import {
+  STEP_DIR_ROOT,
+  stepFollowCommand,
+  stepLaunchCommand,
+  stepSignalCommand,
+  stepStatusCommand
+} from '../k8s/step-supervisor'
 import {
   formatError,
   writeRunScript,
@@ -29,6 +48,7 @@ import {
 } from '../k8s/hook-log'
 import {
   formatStepTransfer,
+  JOB_STEP_CLIENT,
   STEP_CLIENT_DIR,
   STEP_CLIENT_NO_NODE_EXIT,
   StepServer,
@@ -41,6 +61,21 @@ import { runnerPodIp } from '../k8s/work-transfer'
 // Written on the runner when a step could not start over HTTP, so the job's later steps go
 // straight to the exec path instead of failing the same way first.
 const STEP_HTTP_OFF = 'step-http-off'
+
+// Runner settings for detached steps (see step-supervisor.ts), read from the runner's env
+// only, so a workflow cannot change them.
+const RECONNECT_SETTING = 'HOOK_STEP_RECONNECT_SECONDS'
+const RECONNECT_DEFAULT_SECONDS = 300
+const ORPHAN_SETTING = 'HOOK_STEP_ORPHAN_SECONDS'
+const ORPHAN_DEFAULT_SECONDS = 15
+const OUTPUT_LIMIT_SETTING = 'HOOK_STEP_OUTPUT_LIMIT_MB'
+const OUTPUT_LIMIT_DEFAULT_MB = 2048
+// Test only, from the step's env: drop each of the step's exec sessions after this many
+// seconds.
+// A workflow could cut its own steps with it, so it works only on a runner whose env sets
+// DROP_ALLOWED_SETTING to `true`: the test scale set, never a production one.
+const DROP_SETTING = 'HOOK_TEST_DROP_STEP_EXEC_SECONDS'
+const DROP_ALLOWED_SETTING = 'HOOK_TEST_ALLOW_STEP_EXEC_DROP'
 
 // Any failure, in the step itself or in the copies around it (a step after an OOM kill fails
 // in its first exec with "container not found"), also prints what happened to the job pod.
@@ -86,7 +121,8 @@ async function runScriptStepInPod(
       workdir,
       containerPath,
       runnerPath,
-      totalTimer
+      totalTimer,
+      environmentVariables?.[DROP_SETTING]
     )
     if (done) {
       return
@@ -169,15 +205,17 @@ async function runScriptStepInPod(
   )
 }
 
-// Runs the step in one exec session that syncs `_temp` over HTTP (see step-transfer.ts).
-// Returns false, having changed nothing the exec path depends on, when the step could not
-// start that way; the caller then runs it on the exec path.
+// Runs the step detached (see step-supervisor.ts) with `_temp` synced over HTTP (see
+// step-transfer.ts), in one exec session unless the connection drops. Returns false, having
+// changed nothing the exec path depends on, when the step could not start that way; the
+// caller then runs it on the exec path.
 async function runStepOverHttp(
   jobPod: string,
   workdir: string,
   containerPath: string,
   runnerPath: string,
-  totalTimer: Stopwatch
+  totalTimer: Stopwatch,
+  dropSetting: string | undefined
 ): Promise<boolean> {
   const runnerTemp = `${workdir}/_temp`
   const ip = runnerPodIp(process.env)
@@ -198,14 +236,89 @@ async function runStepOverHttp(
     merge: mergeTempCommand('/__w/_temp_pre', '/__w/_temp'),
     pack: 'tar cf - -C /__w/_temp _runner_file_commands'
   })
+  const reconnect = setting(RECONNECT_SETTING, RECONNECT_DEFAULT_SECONDS)
+  const orphan = setting(ORPHAN_SETTING, ORPHAN_DEFAULT_SECONDS)
+  const outputLimit = setting(
+    OUTPUT_LIMIT_SETTING,
+    OUTPUT_LIMIT_DEFAULT_MB,
+    'MiB'
+  )
+  const dropSeconds = testDropSeconds(dropSetting)
+  const runner = {
+    externals: '/__e',
+    missingNodeExit: STEP_CLIENT_NO_NODE_EXIT,
+    client: JOB_STEP_CLIENT,
+    dir: `${STEP_DIR_ROOT}/${randomBytes(8).toString('hex')}`
+  }
+  const exec = async (
+    shellCommand: string,
+    stdout: stream.Writable,
+    stderr: stream.Writable,
+    session: ExecSession = {}
+  ): Promise<void> => {
+    await execPodStep(
+      ['sh', '-c', shellCommand],
+      jobPod,
+      JOB_CONTAINER_NAME,
+      undefined,
+      { stdout, stderr, ...session }
+    )
+  }
+  const cancel = installStepCancel(server.cancel, {
+    process,
+    signalStep: async signal =>
+      exec(stepSignalCommand(runner, signal), discard(), discard()),
+    setTimer: (ms, callback) => setTimeout(callback, ms).unref(),
+    exit: code => process.exit(code)
+  })
   try {
-    await execPodStep(['sh', '-c', command], jobPod, JOB_CONTAINER_NAME)
+    await runDetachedStep(
+      {
+        exec,
+        jobContainerEnded: async () =>
+          jobContainerEnded(jobPod, JOB_CONTAINER_NAME),
+        contacted: () => server.stats.contacted,
+        sleep,
+        now: Date.now,
+        setTimer: (ms, callback) => {
+          const timer = setTimeout(callback, ms)
+          return () => clearTimeout(timer)
+        },
+        stdout: process.stdout,
+        stderr: process.stderr
+      },
+      {
+        launch: stepLaunchCommand({
+          ...runner,
+          command,
+          url: stepServerUrl(ip, server.port),
+          token: server.token,
+          orphanSeconds: orphan,
+          outputLimitMb: outputLimit
+        }),
+        follow: (stdoutOffset, stderrOffset) =>
+          stepFollowCommand(runner, stdoutOffset, stderrOffset),
+        status: stepStatusCommand(runner),
+        reconnectMs: reconnect * 1000,
+        dropAfterMs: dropSeconds ? dropSeconds * 1000 : undefined
+      }
+    )
   } catch (err) {
-    if (!server.stats.started) {
+    // Only an exit code before the script started is safe to retry on the exec path: the
+    // step command has ended without running the script. After a lost connection the
+    // supervisor may still run it, so the step fails instead, and is killed first. A
+    // cancelled step is not retried either: its exit code is the cancel's doing.
+    const exitCode = execExitCode(err)
+    if (exitCode === undefined && !(err instanceof JobContainerEndedError)) {
+      await killAbandonedStep(server.cancel, sleep)
+    }
+    if (
+      !server.stats.started &&
+      exitCode !== undefined &&
+      !cancel.cancelled()
+    ) {
       const message = formatError(err)
-      if (
-        new RegExp(`exit code ${STEP_CLIENT_NO_NODE_EXIT}\\b`).test(message)
-      ) {
+      if (exitCode === STEP_CLIENT_NO_NODE_EXIT) {
         return fallBack(workdir, message, false)
       }
       return fallBack(workdir, message)
@@ -215,6 +328,7 @@ async function runStepOverHttp(
     core.debug(`execPodStep failed: ${message}`)
     throw new Error(`failed to run script step: ${message}`)
   } finally {
+    await cancel.finish()
     await server.close()
   }
   removeRunScript(runnerPath)
@@ -261,13 +375,15 @@ function fallBack(workdir: string, reason: string, warn = true): false {
   if (warn) {
     core.warning(
       `${HOOK_LOG_PREFIX} could not start the step with _temp over HTTP (${reason}); ` +
-        'copying _temp through the API server for this and the later steps'
+        'copying _temp through the API server for this and the later steps. They run ' +
+        'attached: a dropped connection to the job pod fails them'
     )
   } else {
     hookInfo(
       "_temp goes through the API server in this job: the runner's externals have no " +
         "Node.js for this container's C library and architecture (the runner ships a musl " +
-        'build for x64 only)'
+        'build for x64 only). Its steps run attached: a dropped connection to the job ' +
+        'pod fails them'
     )
   }
   try {
@@ -276,6 +392,43 @@ function fallBack(workdir: string, reason: string, warn = true): false {
     core.debug(`cannot record the HTTP fallback: ${formatError(error)}`)
   }
   return false
+}
+
+function setting(name: string, fallback: number, unit = 'seconds'): number {
+  const { value, warning } = positiveSetting(
+    name,
+    process.env[name],
+    fallback,
+    unit
+  )
+  if (warning) {
+    core.warning(`${HOOK_LOG_PREFIX} ${warning}`)
+  }
+  return value
+}
+
+// The step's DROP_SETTING, in seconds, or undefined when it is unset or not allowed here.
+function testDropSeconds(raw: string | undefined): number | undefined {
+  if (!raw) {
+    return undefined
+  }
+  if (process.env[DROP_ALLOWED_SETTING] !== 'true') {
+    hookInfo(
+      `${DROP_SETTING} is ignored: this runner does not set ${DROP_ALLOWED_SETTING}=true`
+    )
+    return undefined
+  }
+  const { value, warning } = positiveSetting(DROP_SETTING, raw, 0, 'seconds')
+  if (warning) {
+    core.warning(`${HOOK_LOG_PREFIX} ${warning}`)
+  }
+  return value || undefined
+}
+
+function discard(): stream.Writable {
+  return new stream.Writable({
+    write: (_chunk, _encoding, callback) => callback()
+  })
 }
 
 function removeRunScript(runnerPath: string): void {

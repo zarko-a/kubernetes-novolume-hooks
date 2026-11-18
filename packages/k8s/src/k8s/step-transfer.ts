@@ -12,6 +12,8 @@ import {
   Stopwatch,
   TarEntryCounter
 } from './hook-log'
+import type { CancelOrder } from './step-follow'
+import { nodeLines, stepRunner } from './step-supervisor'
 import { formatError } from './utils'
 import { bearerMatches, streamTo } from './work-transfer'
 
@@ -44,6 +46,8 @@ export const STEP_CLIENT_NO_NODE_EXIT = 214
 const COMMANDS_DIR = '_runner_file_commands'
 
 export interface StepServeStats {
+  // Any authorized request arrived: the step's supervisor or client is running.
+  contacted: boolean
   downFiles: number
   downBytes: number
   downMs: number
@@ -64,6 +68,9 @@ export interface StepServer {
   port: number
   token: string
   stats: StepServeStats
+  // Set by the hook's cancel; the supervisor reads it from `GET /alive` and signals the
+  // step's process group.
+  cancel: CancelOrder
   close: () => Promise<void>
 }
 
@@ -71,13 +78,17 @@ export interface StepServer {
 // - `GET /temp`: a tar of tempDir (the runner's `_temp`), packed as the exec copy packs it;
 // - `GET /started`: records that the step's script is about to run;
 // - `PUT /commands`: a tar of `_runner_file_commands`, unpacked into tempDir. Entries
-//   outside `_runner_file_commands/` are ignored.
+//   outside `_runner_file_commands/` are ignored;
+// - `GET /alive`: the supervisor's liveness poll (see step-supervisor.ts). 204, or 200 with
+//   the signal to send to the step when the hook was cancelled.
 // The token is in the exec session's command line, which the API server's audit log and the
 // job pod's own processes can see. It grants nothing the job does not already have: reading
 // its own `_temp` and writing its own file commands. The server lives for one step.
 export async function startStepServer(tempDir: string): Promise<StepServer> {
   const token = randomBytes(32).toString('hex')
+  const cancel: CancelOrder = {}
   const stats: StepServeStats = {
+    contacted: false,
     downFiles: 0,
     downBytes: 0,
     downMs: 0,
@@ -91,6 +102,18 @@ export async function startStepServer(tempDir: string): Promise<StepServer> {
   const server = http.createServer((request, response) => {
     if (!bearerMatches(request.headers.authorization, token)) {
       response.writeHead(401).end()
+      return
+    }
+    stats.contacted = true
+    if (request.method === 'GET' && request.url === '/alive') {
+      if (cancel.signal) {
+        cancel.delivered = cancel.signal
+        response
+          .writeHead(200, { 'Content-Type': 'text/plain' })
+          .end(cancel.signal)
+      } else {
+        response.writeHead(204).end()
+      }
       return
     }
     if (request.method === 'GET' && request.url === '/temp') {
@@ -161,6 +184,7 @@ export async function startStepServer(tempDir: string): Promise<StepServer> {
     port: (server.address() as AddressInfo).port,
     token,
     stats,
+    cancel,
     close: async () => {
       server.closeAllConnections()
       await new Promise<void>(resolve => server.close(() => resolve()))
@@ -318,13 +342,23 @@ export function stepClient(
   }
 }
 
-// The client as a file for the job pod: the function's compiled source and a call to it.
+// The client as a file for the job pod: both functions' compiled source and a call to the
+// one the mode belongs to (`down` and `up` here, the detached-step modes in
+// step-supervisor.ts).
 export function stepClientProgram(): string {
-  return (
-    '// Written by the container hook (step-transfer.ts); runs in the job container.\n' +
-    `'use strict';\n(${stepClient.toString()})(require, process.argv[2], process.env, ` +
-    'function (code) { process.exit(code); });\n'
-  )
+  return [
+    '// Written by the container hook (step-transfer.ts, step-supervisor.ts); runs in the job container.',
+    "'use strict';",
+    `var stepClient = (${stepClient.toString()});`,
+    `var stepRunner = (${stepRunner.toString()});`,
+    'var hookExit = function (code) { process.exit(code); };',
+    "if (process.argv[2] === 'down' || process.argv[2] === 'up') {",
+    '  stepClient(require, process.argv[2], process.env, hookExit);',
+    '} else {',
+    '  stepRunner(require, process.argv.slice(2), process.env, hookExit);',
+    '}',
+    ''
+  ].join('\n')
 }
 
 export interface StepCommandOptions {
@@ -351,10 +385,7 @@ export function stepCommand(options: StepCommandOptions): string {
   const client = q(options.client ?? JOB_STEP_CLIENT)
   const auth = `HOOK_STEP_URL=${q(options.url)} HOOK_STEP_TOKEN=${q(options.token)}`
   return [
-    'hook_musl=',
-    'for f in /lib/ld-musl-*; do [ -e "$f" ] && hook_musl=_alpine; done',
-    `hook_node=${q(options.externals ?? '/__e')}/node24$hook_musl/bin/node`,
-    `[ -x "$hook_node" ] || exit ${STEP_CLIENT_NO_NODE_EXIT}`,
+    ...nodeLines(options.externals ?? '/__e', STEP_CLIENT_NO_NODE_EXIT),
     `if ! hook_err=$(${auth} HOOK_STEP_UNPACK=${q(options.unpack)} HOOK_STEP_MERGE=${q(options.merge)} "$hook_node" ${client} down 2>&1 >/dev/null); then`,
     `  echo "${HOOK_LOG_PREFIX} _temp download failed: $hook_err" >&2`,
     `  exit ${STEP_CLIENT_FAILED_EXIT}`,

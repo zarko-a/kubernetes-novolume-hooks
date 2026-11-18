@@ -46,7 +46,10 @@ jest.mock('../src/k8s/utils', () => {
 
 import { execCpToPod, execListing, execPodStep } from '../src/k8s'
 import {
+  ExecExitError,
+  execExitCode,
   rejectIfClosedWithoutStatus,
+  statusExitCode,
   trackStatus
 } from '../src/k8s/exec-status'
 
@@ -213,5 +216,86 @@ describe('execs whose stream closes without a status', () => {
 
     expect(copies).toBe(2)
     expect(stats.transferAttempts).toBe(2)
+  })
+})
+
+describe('exit codes of failed execs', () => {
+  const nonZero = {
+    status: 'Failure',
+    reason: 'NonZeroExitCode',
+    message:
+      'command terminated with non-zero exit code: command terminated with exit code 3',
+    details: { causes: [{ reason: 'ExitCode', message: '3' }] }
+  }
+
+  it('reads the code from the Status the kubelet sends', () => {
+    expect(statusExitCode(nonZero)).toBe(3)
+    expect(
+      statusExitCode({ status: 'Failure', message: 'container not found' })
+    ).toBe(undefined)
+    expect(statusExitCode(undefined)).toBe(undefined)
+  })
+
+  it('reads the code from an ExecExitError or a message that states it', () => {
+    expect(execExitCode(new ExecExitError('anything', 7))).toBe(7)
+    expect(
+      execExitCode(new Error('command terminated with exit code 213'))
+    ).toBe(213)
+    expect(
+      execExitCode(
+        new Error(
+          'command sh in pod: the exec stream closed before the command reported an exit status'
+        )
+      )
+    ).toBe(undefined)
+    expect(execExitCode(new Error('exit code 2140 of something'))).toBe(
+      undefined
+    )
+  })
+
+  it('execPodStep rejects with the exit code and writes to the given streams', async () => {
+    jest.clearAllMocks()
+    let written = ''
+    const out = new Writable({
+      write: (chunk, _encoding, callback) => {
+        written += chunk.toString()
+        callback()
+      }
+    })
+    mockExec.mockImplementation(async (...args: unknown[]) => {
+      const ws = new FakeSocket()
+      const callback = args[8] as (status: unknown) => void
+      setImmediate(() => {
+        ;(args[4] as Writable).write('from the step\n')
+        callback(nonZero)
+        ws.dropped()
+      })
+      return ws
+    })
+    const failure = execPodStep(
+      ['sh', '-c', 'exit 3'],
+      'pod',
+      'job',
+      undefined,
+      {
+        stdout: out
+      }
+    )
+    await expect(failure).rejects.toBeInstanceOf(ExecExitError)
+    await expect(failure).rejects.toMatchObject({ exitCode: 3 })
+    expect(written).toBe('from the step\n')
+  })
+
+  it('execPodStep cuts the connection after dropAfterMs, as a restarted API server would', async () => {
+    jest.clearAllMocks()
+    const socket = new FakeSocket() as FakeSocket & { terminate: jest.Mock }
+    socket.terminate = jest.fn(() => socket.dropped())
+    mockExec.mockImplementation(async () => socket)
+    await expect(
+      execPodStep(['sleep', '60'], 'pod', 'job', undefined, { dropAfterMs: 10 })
+    ).rejects.toThrow(
+      'the exec stream closed before the command reported an exit status'
+    )
+    expect(socket.terminate).toHaveBeenCalled()
   })
 })

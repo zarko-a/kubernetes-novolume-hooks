@@ -7,6 +7,7 @@ const mockExecCpToPod = jest.fn()
 const mockExecCpFromPod = jest.fn()
 const mockStartStepServer = jest.fn()
 const mockRunnerPodIp = jest.fn()
+const mockJobContainerEnded = jest.fn()
 const mockInfo = jest.fn()
 const mockWarning = jest.fn()
 
@@ -22,6 +23,7 @@ jest.mock('../src/k8s', () => ({
   execCpToPod: (...args: unknown[]) => mockExecCpToPod(...args),
   execCpFromPod: (...args: unknown[]) => mockExecCpFromPod(...args),
   extractToPodCommand: (dir: string) => `UNPACK ${dir}`,
+  jobContainerEnded: (...args: unknown[]) => mockJobContainerEnded(...args),
   reportPodTrouble: jest.fn(),
   troubleWaitMs: () => 0
 }))
@@ -37,6 +39,7 @@ jest.mock('../src/k8s/work-transfer', () => ({
 }))
 
 import { runScriptStep } from '../src/hooks/run-script-step'
+import { CancelOrder } from '../src/k8s/step-follow'
 import { StepServeStats } from '../src/k8s/step-transfer'
 
 const COPY_STATS = {
@@ -58,10 +61,12 @@ const ARGS = {
 
 // What the fake server reports once the step's exec session ends.
 let serverStats: StepServeStats
+let serverCancel: CancelOrder
 const closeServer = jest.fn()
 
 function stats(overrides: Partial<StepServeStats> = {}): StepServeStats {
   return {
+    contacted: true,
     downFiles: 12,
     downBytes: 10240,
     downMs: 40,
@@ -94,13 +99,21 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     process.env.RUNNER_TEMP = path.join(work, '_temp')
     mockRunnerPodIp.mockReturnValue('10.0.0.7')
     serverStats = stats()
+    // A supervisor that fetches a cancel at once.
+    serverCancel = {
+      set signal(value: 'SIGINT' | 'SIGKILL' | undefined) {
+        this.delivered = value
+      }
+    }
     mockStartStepServer.mockImplementation(async () => ({
       port: 4567,
       token: 'secret-token',
       stats: serverStats,
+      cancel: serverCancel,
       close: closeServer
     }))
     mockExecPodStep.mockResolvedValue(0)
+    mockJobContainerEnded.mockResolvedValue(undefined)
     mockExecCpToPod.mockResolvedValue(COPY_STATS)
     mockExecCpFromPod.mockResolvedValue(COPY_STATS)
   })
@@ -168,7 +181,8 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(mockWarning).toHaveBeenCalledWith(
       '[custom-hook] could not start the step with _temp over HTTP ' +
         '(command terminated with exit code 213); copying _temp through the API ' +
-        'server for this and the later steps'
+        'server for this and the later steps. They run attached: a dropped ' +
+        'connection to the job pod fails them'
     )
     expect(execPathRan()).toBe(true)
     expect(mockExecCpFromPod).toHaveBeenCalled()
@@ -204,7 +218,8 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(mockInfo).toHaveBeenCalledWith(
       "[custom-hook] _temp goes through the API server in this job: the runner's " +
         "externals have no Node.js for this container's C library and architecture " +
-        '(the runner ships a musl build for x64 only)'
+        '(the runner ships a musl build for x64 only). Its steps run attached: a ' +
+        'dropped connection to the job pod fails them'
     )
     expect(execPathRan()).toBe(true)
     expect(mockExecCpFromPod).toHaveBeenCalled()
@@ -306,5 +321,132 @@ describe('runScriptStep with the per-step HTTP sync', () => {
       path.join(work, '_temp')
     )
     expect(execPathRan()).toBe(false)
+  })
+
+  it('runs the step detached, with the runner settings and the test drop', async () => {
+    process.env.HOOK_STEP_ORPHAN_SECONDS = '20'
+    process.env.HOOK_STEP_OUTPUT_LIMIT_MB = '100'
+    process.env.HOOK_TEST_ALLOW_STEP_EXEC_DROP = 'true'
+    await runScriptStep(
+      {
+        ...ARGS,
+        environmentVariables: { HOOK_TEST_DROP_STEP_EXEC_SECONDS: '30' }
+      },
+      { jobPod: 'pod', stepTransfer: 'http' }
+    )
+
+    expect(mockExecPodStep).toHaveBeenCalledTimes(1)
+    const [command, , , stdin, io] = mockExecPodStep.mock.calls[0]
+    expect(command[2]).toMatch(
+      /HOOK_RUN_ORPHAN_SECONDS=20 HOOK_RUN_OUTPUT_LIMIT_MB=100 exec "\$hook_node" \/__w\/_custom_hook\/step-client\.js start \/__w\/_custom_hook\/steps\/[0-9a-f]{16}$/
+    )
+    expect(stdin).toBeUndefined()
+    expect(io.dropAfterMs).toBe(30_000)
+    // The handlers for the runner's cancel are gone once the step is over.
+    expect(process.listenerCount('SIGINT')).toBe(0)
+    expect(process.listenerCount('SIGTERM')).toBe(0)
+  })
+
+  it('ignores the test drop on a runner that does not allow it', async () => {
+    await runScriptStep(
+      {
+        ...ARGS,
+        environmentVariables: { HOOK_TEST_DROP_STEP_EXEC_SECONDS: '30' }
+      },
+      { jobPod: 'pod', stepTransfer: 'http' }
+    )
+
+    expect(mockExecPodStep.mock.calls[0][4].dropAfterMs).toBeUndefined()
+    expect(mockExecPodStep.mock.calls[0][0][2]).toContain(
+      'HOOK_RUN_OUTPUT_LIMIT_MB=2048 '
+    )
+    expect(mockInfo).toHaveBeenCalledWith(
+      '[custom-hook] HOOK_TEST_DROP_STEP_EXEC_SECONDS is ignored: this runner does ' +
+        'not set HOOK_TEST_ALLOW_STEP_EXEC_DROP=true'
+    )
+  })
+
+  it('does not run a step on the exec path that was cancelled before its script started', async () => {
+    serverStats = stats({ started: false, upCompleted: false })
+    mockExecPodStep.mockImplementation(async (command: string[]) => {
+      if (isHttpStep(command)) {
+        // The runner's cancel, while `_temp` is still on its way to the job pod.
+        process.emit('SIGINT')
+        throw new Error('command terminated with exit code 2')
+      }
+      return 0
+    })
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      'failed to run script step: command terminated with exit code 2'
+    )
+    expect(execPathRan()).toBe(false)
+    expect(mockWarning).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(work, '_custom_hook/step-http-off'))).toBe(
+      false
+    )
+    expect(serverCancel.delivered).toBe('SIGINT')
+    // The cancel's SIGINT, and the SIGKILL for what the step left behind.
+    const signals = mockExecPodStep.mock.calls
+      .map(([c]) => / signal \S+ (SIG\w+)$/.exec(c[2])?.[1])
+      .filter(Boolean)
+    expect(signals).toEqual(['SIGINT', 'SIGKILL'])
+    expect(process.listenerCount('SIGINT')).toBe(0)
+  })
+
+  it('warns about a setting that is not a number of seconds, and uses the default', async () => {
+    process.env.HOOK_STEP_ORPHAN_SECONDS = 'soon'
+    await runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    expect(mockWarning).toHaveBeenCalledWith(
+      '[custom-hook] HOOK_STEP_ORPHAN_SECONDS is "soon", not a whole number of ' +
+        'seconds above 0; using 15'
+    )
+    expect(mockExecPodStep.mock.calls[0][0][2]).toContain(
+      'HOOK_RUN_ORPHAN_SECONDS=15 '
+    )
+  })
+
+  it('does not fall back to the exec path after a lost connection, even before the script started', async () => {
+    process.env.HOOK_STEP_RECONNECT_SECONDS = '1'
+    serverStats = stats({ started: false, upCompleted: false })
+    mockExecPodStep.mockRejectedValue(
+      new Error(
+        'the exec stream closed before the command reported an exit status'
+      )
+    )
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      'failed to run script step: lost the connection to the step and could not ' +
+        'reconnect within 1.0s'
+    )
+    expect(execPathRan()).toBe(false)
+    expect(mockWarning).not.toHaveBeenCalled()
+    // The step may still run, so it is killed through the supervisor's next poll.
+    expect(serverCancel.delivered).toBe('SIGKILL')
+  })
+
+  it('says the job container is gone instead of trying the exec path', async () => {
+    serverStats = stats({ started: false, upCompleted: false })
+    mockExecPodStep.mockRejectedValue(
+      new Error(
+        'Internal error occurred: unable to upgrade connection: container not found ("job")'
+      )
+    )
+    mockJobContainerEnded.mockResolvedValue('terminated OOMKilled, exit 137')
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      'failed to run script step: the job container is no longer running ' +
+        '(terminated OOMKilled, exit 137); this step cannot run'
+    )
+    expect(mockJobContainerEnded).toHaveBeenCalledWith('pod', 'job')
+    expect(execPathRan()).toBe(false)
+    expect(mockWarning).not.toHaveBeenCalled()
+    expect(serverCancel.delivered).toBeUndefined()
   })
 })

@@ -8,6 +8,35 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+### Added
+
+- `run:` steps survive a dropped exec connection. The step runs detached in the job pod under
+  a supervisor, with its output and exit code in files; the exec session only prints them.
+  When the session drops (an API server instance restarted or replaced), the hook reconnects
+  for up to `HOOK_STEP_RECONNECT_SECONDS` (default 300, for each drop) and resumes the output
+  where it stopped, instead of failing the step with "the exec stream closed before the
+  command reported an exit status". A supervisor lock keeps a repeated launch from running
+  the step twice.
+- What keeps a detached step from running on or overlapping the next one: the runner's
+  cancel and `timeout-minutes` are forwarded to the step's process group (one SIGINT, then
+  SIGKILL); the supervisor stops a step whose hook is gone, which it concludes from
+  `HOOK_STEP_ORPHAN_SECONDS` (default 15) failed liveness polls with no exec session reading
+  the output; the hook has a step killed before it gives up on reconnecting; a step left
+  running by an interrupted earlier step is killed before the next one starts.
+- `HOOK_STEP_OUTPUT_LIMIT_MB` (default 2048): a step that writes more output than this is
+  stopped, since its output now waits on the job pod's disk until the hook has read it.
+- Steps on the exec path, and container-action steps, still run attached; the job log says so
+  when a job's steps take the exec path.
+- `HOOK_TEST_DROP_STEP_EXEC_SECONDS` (step env, testing only) cuts each of a step's exec
+  sessions on demand, on runners that set `HOOK_TEST_ALLOW_STEP_EXEC_DROP=true`.
+
+### Changed
+
+- A step that runs after the job container is gone (an OOM kill) fails with "the job
+  container is no longer running (terminated OOMKilled, exit 137); this step cannot run",
+  instead of a warning about the HTTP transfer and a retry over exec. A step that was
+  running when the container ended says "the step ended with it".
+
 ### Fixed
 
 - A unit test's mock exec ended `process.stdout`, which the real `@kubernetes/client-node`

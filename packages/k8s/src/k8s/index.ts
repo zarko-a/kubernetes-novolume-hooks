@@ -36,7 +36,12 @@ import {
   TarEntryCounter
 } from './hook-log'
 import { PollSchedule } from './poll'
-import { rejectIfClosedWithoutStatus, trackStatus } from './exec-status'
+import {
+  ExecExitError,
+  rejectIfClosedWithoutStatus,
+  statusExitCode,
+  trackStatus
+} from './exec-status'
 import {
   eventsSince,
   FailFastSettings,
@@ -285,11 +290,23 @@ export async function deletePod(name: string): Promise<void> {
   })
 }
 
+export interface ExecIo {
+  // Where the command's output goes; process.stdout and process.stderr by default.
+  stdout?: stream.Writable
+  stderr?: stream.Writable
+  // Test only (HOOK_TEST_DROP_STEP_EXEC_SECONDS): cut the websocket after this long, as an
+  // API server or kubelet restart would.
+  dropAfterMs?: number
+  // Called once the websocket is open.
+  onOpen?: () => void
+}
+
 export async function execPodStep(
   command: string[],
   podName: string,
   containerName: string,
-  stdin?: stream.Readable
+  stdin?: stream.Readable,
+  io: ExecIo = {}
 ): Promise<number> {
   const exec = new k8s.Exec(kc)
   core.debug(
@@ -353,7 +370,13 @@ export async function execPodStep(
           `[execPodStep] Failure: ${JSON.stringify({ message: resp?.message, details: resp?.details })}`
         )
         await closeWebSocket()
-        reject(new Error(resp?.message || 'execPodStep failed'))
+        const message = resp?.message || 'execPodStep failed'
+        const exitCode = statusExitCode(resp)
+        reject(
+          exitCode === undefined
+            ? new Error(message)
+            : new ExecExitError(message, exitCode)
+        )
       }
     })
 
@@ -363,8 +386,8 @@ export async function execPodStep(
         podName,
         containerName,
         command,
-        process.stdout,
-        process.stderr,
+        io.stdout ?? process.stdout,
+        io.stderr ?? process.stderr,
         stdin ?? null,
         false /* tty */,
         status.callback
@@ -372,6 +395,10 @@ export async function execPodStep(
       .then(websocket => {
         core.debug('[execPodStep] exec.exec resolved, ws object received')
         ws = websocket
+        io.onOpen?.()
+        if (ws && io.dropAfterMs !== undefined) {
+          dropLater(ws, io.dropAfterMs)
+        }
         rejectIfClosedWithoutStatus(
           ws,
           status.received,
@@ -410,6 +437,21 @@ export async function execPodStep(
         reject(e)
       })
   })
+}
+
+// Cuts the connection without a close handshake, like a restarted API server.
+function dropLater(ws: HeartbeatWebSocket, ms: number): void {
+  const socket = ws as HeartbeatWebSocket & { terminate?: () => void }
+  const timer = setTimeout(() => {
+    core.debug(`[execPodStep] dropping the exec websocket after ${ms}ms (test)`)
+    if (typeof socket.terminate === 'function') {
+      socket.terminate()
+    } else {
+      socket.close()
+    }
+  }, ms)
+  timer.unref()
+  socket.once('close', () => clearTimeout(timer))
 }
 
 // Runs a listing command in the job pod and returns its stdout.
@@ -1084,6 +1126,35 @@ export async function reportPodTrouble(
   } catch (error) {
     core.debug(`reporting the job pod's state failed: ${formatError(error)}`)
   }
+}
+
+// Why the job container cannot run a step any more ("terminated OOMKilled, exit 137", "the
+// job pod no longer exists"), or undefined if it still runs or the pod cannot be read now
+// (an API server blip: the caller tries again).
+export async function jobContainerEnded(
+  podName: string,
+  containerName: string
+): Promise<string | undefined> {
+  let pod: k8s.V1Pod
+  try {
+    pod = await getPodByName(podName)
+  } catch (error) {
+    if (apiErrorCode(error) === 404) {
+      return 'the job pod no longer exists'
+    }
+    core.debug(`reading the job pod failed: ${formatError(error)}`)
+    return undefined
+  }
+  const terminated = pod.status?.containerStatuses?.find(
+    c => c.name === containerName
+  )?.state?.terminated
+  if (terminated) {
+    return `terminated ${terminated.reason ?? 'with no reason'}, exit ${terminated.exitCode}`
+  }
+  if (pod.metadata?.deletionTimestamp) {
+    return 'the job pod is being deleted'
+  }
+  return undefined
 }
 
 export function getPrepareJobTimeoutSeconds(): number {
