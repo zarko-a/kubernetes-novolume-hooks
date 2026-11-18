@@ -70,6 +70,9 @@ const ORPHAN_SETTING = 'HOOK_STEP_ORPHAN_SECONDS'
 const ORPHAN_DEFAULT_SECONDS = 15
 const OUTPUT_LIMIT_SETTING = 'HOOK_STEP_OUTPUT_LIMIT_MB'
 const OUTPUT_LIMIT_DEFAULT_MB = 2048
+// How often the hook writes to the stdin of the session that reads a step's output.
+const HEARTBEAT_MS = 1000
+
 // Test only, from the step's env: drop each of the step's exec sessions after this many
 // seconds.
 // A workflow could cut its own steps with it, so it works only on a runner whose env sets
@@ -256,13 +259,24 @@ async function runStepOverHttp(
     stderr: stream.Writable,
     session: ExecSession = {}
   ): Promise<void> => {
-    await execPodStep(
-      ['sh', '-c', shellCommand],
-      jobPod,
-      JOB_CONTAINER_NAME,
-      undefined,
-      { stdout, stderr, ...session }
-    )
+    const { heartbeat, ...io } = session
+    // The heartbeat: a byte a second on the command's stdin (see step-supervisor.ts).
+    const stdin = heartbeat ? new stream.PassThrough() : undefined
+    const beat = stdin
+      ? setInterval(() => stdin.write('\n'), HEARTBEAT_MS)
+      : undefined
+    try {
+      await execPodStep(
+        ['sh', '-c', shellCommand],
+        jobPod,
+        JOB_CONTAINER_NAME,
+        stdin,
+        { stdout, stderr, ...io }
+      )
+    } finally {
+      clearInterval(beat)
+      stdin?.end()
+    }
   }
   const cancel = installStepCancel(server.cancel, {
     process,

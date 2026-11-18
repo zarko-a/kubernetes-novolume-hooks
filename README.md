@@ -49,18 +49,18 @@ for the scale set and a workflow can override it. An empty value counts as unset
 
 ### Settings
 
-| Variable                           | Read from   | Default | Values and effect                                                                                                                                                                                                                                                                        |
-| ---------------------------------- | ----------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `HOOK_WORK_TRANSFER`               | job, runner | `http`  | `http`: the job pod downloads `_work` from the hook, and each `run:` step syncs `_temp` the same way. `exec`: copy through the Kubernetes API, as upstream does; use it where the job pod cannot reach the runner pod (a NetworkPolicy, a firewall).                                     |
-| `HOOK_EXTERNALS`                   | job, runner | `image` | `image`: mount the runner's externals (`/__e`) read-only from the runner image as an image volume. Needs Kubernetes 1.35+, or the `ImageVolume` feature gate on 1.33-1.34, and a runtime that supports image volumes (e.g. containerd 2.1+). `copy`: `fs-init` copies them, as upstream. |
-| `HOOK_GIT_SAFE_DIRECTORY`          | job, runner | `true`  | `true`: add `safe.directory=*` to the job container's git config through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`, after any entries the workflow sets. `false`: leave git's config alone.                                                                         |
-| `HOOK_FAIL_FAST`                   | job, runner | `true`  | `true`: fail `prepare_job` with the kubelet's message when a job pod container stays in `ErrImagePull`, `ImagePullBackOff` or `CreateContainerConfigError` past the grace period, or hits `InvalidImageName`. `false`: wait for the prepare-job timeout, as upstream.                    |
-| `HOOK_FAIL_FAST_SECONDS`           | job, runner | `60`    | The grace period, in whole seconds. It must be below `ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS`, or that timeout comes first.                                                                                                                                                          |
-| `HOOK_STEP_RECONNECT_SECONDS`      | runner      | `300`   | How long the hook keeps reconnecting to a `run:` step after its exec session drops (see "Steps that survive a dropped connection"). The step keeps running meanwhile; past this, it is stopped and fails. Each drop gets the full time.                                                  |
-| `HOOK_STEP_ORPHAN_SECONDS`         | runner      | `15`    | How long a step runs on after its hook is gone (the runner pod died, or the hook was killed): this many seconds of failed liveness polls, with no exec session reading the step's output. Then the step's processes get SIGTERM, and SIGKILL 3s later.                                   |
-| `HOOK_STEP_OUTPUT_LIMIT_MB`        | runner      | `2048`  | How much output (stdout plus stderr, in MiB) a `run:` step may write before it is stopped the same way. The output waits in files in the job pod until the hook has read it, so nothing slows down a step that writes faster than that.                                                  |
-| `HOOK_TEST_DROP_STEP_EXEC_SECONDS` | step        | none    | Testing only: cut each of the step's exec sessions after this many seconds, as an API server restart would, so the reconnect can be tested on demand (a step longer than twice this is cut more than once). Ignored unless the runner sets `HOOK_TEST_ALLOW_STEP_EXEC_DROP`.             |
-| `HOOK_TEST_ALLOW_STEP_EXEC_DROP`   | runner      | `false` | `true`: steps may use `HOOK_TEST_DROP_STEP_EXEC_SECONDS`. For a test scale set only: on any other, a workflow could cut its own steps.                                                                                                                                                   |
+| Variable                           | Read from   | Default | Values and effect                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | ----------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `HOOK_WORK_TRANSFER`               | job, runner | `http`  | `http`: the job pod downloads `_work` from the hook, and each `run:` step syncs `_temp` the same way. `exec`: copy through the Kubernetes API, as upstream does; use it where the job pod cannot reach the runner pod (a NetworkPolicy, a firewall).                                       |
+| `HOOK_EXTERNALS`                   | job, runner | `image` | `image`: mount the runner's externals (`/__e`) read-only from the runner image as an image volume. Needs Kubernetes 1.35+, or the `ImageVolume` feature gate on 1.33-1.34, and a runtime that supports image volumes (e.g. containerd 2.1+). `copy`: `fs-init` copies them, as upstream.   |
+| `HOOK_GIT_SAFE_DIRECTORY`          | job, runner | `true`  | `true`: add `safe.directory=*` to the job container's git config through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`, after any entries the workflow sets. `false`: leave git's config alone.                                                                           |
+| `HOOK_FAIL_FAST`                   | job, runner | `true`  | `true`: fail `prepare_job` with the kubelet's message when a job pod container stays in `ErrImagePull`, `ImagePullBackOff` or `CreateContainerConfigError` past the grace period, or hits `InvalidImageName`. `false`: wait for the prepare-job timeout, as upstream.                      |
+| `HOOK_FAIL_FAST_SECONDS`           | job, runner | `60`    | The grace period, in whole seconds. It must be below `ACTIONS_RUNNER_PREPARE_JOB_TIMEOUT_SECONDS`, or that timeout comes first.                                                                                                                                                            |
+| `HOOK_STEP_RECONNECT_SECONDS`      | runner      | `300`   | How long the hook keeps reconnecting to a `run:` step after its exec session drops (see "Steps that survive a dropped connection"). The step keeps running meanwhile; past this, it is stopped and fails. Each drop gets the full time.                                                    |
+| `HOOK_STEP_ORPHAN_SECONDS`         | runner      | `15`    | How long a step runs on after its hook is gone (the runner pod died, or the hook was killed): this many seconds of failed liveness polls, with nothing from the hook on the exec session that reads the step's output either. Then the step's processes get SIGTERM, and SIGKILL 3s later. |
+| `HOOK_STEP_OUTPUT_LIMIT_MB`        | runner      | `2048`  | How much output (stdout plus stderr, in MiB) a `run:` step may write before it is stopped the same way. The output waits in files in the job pod until the hook has read it, so nothing slows down a step that writes faster than that.                                                    |
+| `HOOK_TEST_DROP_STEP_EXEC_SECONDS` | step        | none    | Testing only: cut each of the step's exec sessions after this many seconds, as an API server restart would, so the reconnect can be tested on demand (a step longer than twice this is cut more than once). Ignored unless the runner sets `HOOK_TEST_ALLOW_STEP_EXEC_DROP`.               |
+| `HOOK_TEST_ALLOW_STEP_EXEC_DROP`   | runner      | `false` | `true`: steps may use `HOOK_TEST_DROP_STEP_EXEC_SECONDS`. For a test scale set only: on any other, a workflow could cut its own steps.                                                                                                                                                     |
 
 A value that is not one of the listed ones is a warning in the job log, and the default is
 used. The job log's `[custom-hook]` lines say which value each setting took and where it came
@@ -140,10 +140,12 @@ costs one exec session.
   SIGINT once, whichever arrives first. Once a cancelled step has ended, whatever it left
   running in its process group is killed too.
 - **A hook that is gone.** The supervisor polls the hook's per-step server every second, pod
-  to pod. When `HOOK_STEP_ORPHAN_SECONDS` polls in a row have failed and no exec session is
-  reading the step's output, the hook is gone, and the supervisor stops the step. One of the
-  two alone is not enough: the polls fail during a pod network blip, and the exec session is
-  gone during an API server restart.
+  to pod, and the hook writes a byte a second to the stdin of the exec session that reads
+  the step's output. When `HOOK_STEP_ORPHAN_SECONDS` polls in a row have failed and no byte
+  has arrived for 5s, the hook is gone, and the supervisor stops the step. One of the two
+  alone is not enough: the polls fail during a pod network blip, and the exec session is
+  gone during an API server restart. That the session's process still runs in the job pod
+  proves nothing: a hook that dies leaves it behind.
 - **No overlap.** Before a step starts, anything an earlier step left running without a
   recorded exit code (its hook was killed) is killed. Processes a finished step started in
   the background on purpose (`nohup server &`) are left alone, as on a VM runner.
@@ -203,9 +205,6 @@ while it runs a job, needs `patch` on `pods` as well.
   fraction of a second appear in the job log grouped by stream rather than in the order
   they were written: a `set -x` trace can follow the output of its commands. Each line is
   whole.
-- A step whose hook is gone, but whose exec session stays half-open (the runner's node
-  failed without closing its connections), runs on until that session ends or the job pod
-  is deleted.
 
 ## Disclaimer
 

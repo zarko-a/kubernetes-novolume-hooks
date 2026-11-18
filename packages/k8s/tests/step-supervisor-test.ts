@@ -267,10 +267,13 @@ describe('detached steps', () => {
     await started.exited
   }
 
-  // Starts `start` with pipes, counting what arrives, like the hook does.
+  // Starts `start` with pipes, counting what arrives, like the hook does. With `heartbeat`,
+  // it also writes to the reader's stdin as the hook does through its exec session;
+  // without, the reader is one whose hook has gone quiet.
   function startAttached(
     dir: string,
-    env: Record<string, string>
+    env: Record<string, string>,
+    heartbeat = false
   ): {
     child: ChildProcess
     out: () => string
@@ -281,8 +284,13 @@ describe('detached steps', () => {
     let err = Buffer.alloc(0)
     const child = spawn(process.execPath, [clientFile, 'start', dir], {
       env,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe']
     })
+    child.stdin?.on('error', () => undefined)
+    if (heartbeat) {
+      const beat = setInterval(() => child.stdin?.write('\n'), 500)
+      child.on('exit', () => clearInterval(beat))
+    }
     child.stdout?.on('data', (chunk: Buffer) => {
       out = Buffer.concat([out, chunk])
     })
@@ -434,6 +442,11 @@ describe('detached steps', () => {
     expect(fs.readdirSync(stepsRoot)).toEqual(['step1'])
   }, 20000)
 
+  const ORPHANED =
+    '[custom-hook] the runner has not answered 2 liveness checks in a row and its hook ' +
+    'has stopped reading the output of the step (the hook process or the runner pod is ' +
+    'gone); stopping the step'
+
   it('stops the step when the hook does not answer and nothing reads its output', async () => {
     await server.close()
     const startedAt = Date.now()
@@ -445,21 +458,45 @@ describe('detached steps', () => {
     )
     expect(stepFile('exit')).toBe('143 SIGTERM')
     expect(stepFile('stderr')).toBe(
-      '[custom-hook] the runner has not answered 2 liveness checks in a row and ' +
-        'nothing is reading the output of the step (its hook process or pod is gone); ' +
-        'stopping the step\n' +
-        '[custom-hook] the step was ended by SIGTERM\n'
+      `${ORPHANED}\n[custom-hook] the step was ended by SIGTERM\n`
     )
   }, 20000)
 
-  it('keeps the step while its output is read, though the hook does not answer', async () => {
-    // A pod network blip: the polls fail, the exec session is fine.
+  it('stops the step when the hook is gone and only its reader was left behind', async () => {
+    // What a killed hook leaves in the job pod: the process of its exec session, which
+    // nothing ends, and no more bytes on its stdin.
     await server.close()
-    const result = await client(
-      ['start', stepDir()],
-      runEnv('sleep 3; echo done', { HOOK_RUN_ORPHAN_SECONDS: '1' })
+    const startedAt = Date.now()
+    const started = startAttached(
+      stepDir(),
+      runEnv('sleep 30', { HOOK_RUN_ORPHAN_SECONDS: '2' })
     )
-    expect(result).toEqual({ code: 0, stdout: 'done\n', stderr: '' })
+    spawned.push(started.child)
+    expect(await started.exited).toBe(143)
+    // The reader's last sign of the hook is its own start; 5s later it no longer counts.
+    expect(Date.now() - startedAt).toBeGreaterThan(5 * SECOND)
+    expect(Date.now() - startedAt).toBeLessThan(
+      5 * SECOND + 3 * SECOND + 3 * SECOND
+    )
+    // The polls failed all along, so more than the two that were needed.
+    expect(started.err()).toMatch(
+      /^\[custom-hook\] the runner has not answered \d+ liveness checks in a row and its hook has stopped reading the output of the step \(the hook process or the runner pod is gone\); stopping the step\n\[custom-hook\] the step was ended by SIGTERM\n$/
+    )
+  }, 30000)
+
+  it('keeps the step while the hook reads its output, though it does not answer', async () => {
+    // A pod network blip: the polls fail, the exec session is fine and carries the hook's
+    // heartbeat. Longer than a reader stays fresh without one.
+    await server.close()
+    const started = startAttached(
+      stepDir(),
+      runEnv('sleep 7; echo done', { HOOK_RUN_ORPHAN_SECONDS: '1' }),
+      true
+    )
+    spawned.push(started.child)
+    expect(await started.exited).toBe(0)
+    expect(started.out()).toBe('done\n')
+    expect(started.err()).toBe('')
   }, 20000)
 
   it('keeps the step while the hook answers, though nothing reads its output', async () => {
@@ -666,11 +703,19 @@ describe('detached steps', () => {
       client(['start', stepDir()], env)
     ])
     expect(fs.readFileSync(ranFile, 'utf8')).toBe('ran\n')
-    // Both read the one step.
-    expect(results.map(r => [r.code, r.stdout])).toEqual([
-      [0, 'done\n'],
-      [0, 'done\n']
-    ])
+    // The later reader ends the earlier one; it reads the one step to its end.
+    expect(results.some(r => r.code === 0 && r.stdout === 'done\n')).toBe(true)
+  }, 20000)
+
+  it('ends the reader an earlier session left behind', async () => {
+    const started = startAttached(stepDir(), runEnv('sleep 2; echo done'))
+    spawned.push(started.child)
+    await until(() => fs.existsSync(path.join(stepDir(), 'follower')))
+    const resumed = await client(['follow', stepDir(), '0', '0'])
+    expect(resumed).toEqual({ code: 0, stdout: 'done\n', stderr: '' })
+    // Killed, not finished: the hook reads the new session.
+    expect(await started.exited).toBeNull()
+    expect(started.out()).toBe('')
   }, 20000)
 
   it('does not run a step whose launch was given up', async () => {

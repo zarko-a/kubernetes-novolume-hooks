@@ -72,6 +72,7 @@ function setup(attempts: Attempt[]): {
   deps: DetachedStepDeps
   commands: string[]
   drops: (number | undefined)[]
+  heartbeats: (boolean | undefined)[]
   stdout: Sink
   stderr: Sink
   sleeps: number[]
@@ -82,6 +83,7 @@ function setup(attempts: Attempt[]): {
   let now = 0
   const commands: string[] = []
   const drops: (number | undefined)[] = []
+  const heartbeats: (boolean | undefined)[] = []
   const sleeps: number[] = []
   const timers: Timer[] = []
   const stdout = new Sink(jobLog)
@@ -90,6 +92,7 @@ function setup(attempts: Attempt[]): {
     exec: async (command, out, err, session = {}) => {
       commands.push(command)
       drops.push(session.dropAfterMs)
+      heartbeats.push(session.heartbeat)
       const attempt = attempts.shift()
       if (!attempt) {
         throw new Error(DROPPED)
@@ -117,6 +120,7 @@ function setup(attempts: Attempt[]): {
     deps,
     commands,
     drops,
+    heartbeats,
     stdout,
     stderr,
     sleeps,
@@ -171,7 +175,7 @@ describe('runDetachedStep', () => {
   })
 
   it('runs the launch once when nothing goes wrong', async () => {
-    const { deps, commands, drops, stdout } = setup([
+    const { deps, commands, drops, heartbeats, stdout } = setup([
       async (_command, out) => {
         out.write('hello\n')
       }
@@ -179,6 +183,7 @@ describe('runDetachedStep', () => {
     await runDetachedStep(deps, { ...OPTIONS, dropAfterMs: 20_000 })
     expect(commands).toEqual(['LAUNCH'])
     expect(drops).toEqual([20_000])
+    expect(heartbeats).toEqual([true])
     expect(stdout.text).toBe('hello\n')
     expect(mockInfo).not.toHaveBeenCalled()
   })
@@ -390,6 +395,7 @@ describe('runDetachedStep', () => {
       }
     ])
     deps.jobContainerEnded = async () => 'terminated OOMKilled, exit 137'
+    deps.contacted = () => false
     const result = runDetachedStep(deps, OPTIONS)
     await expect(result).rejects.toThrow(
       'the job container is no longer running (terminated OOMKilled, exit 137); ' +
@@ -401,22 +407,24 @@ describe('runDetachedStep', () => {
   })
 
   it('says a running step ended with its job container', async () => {
-    // An OOM kill takes the reader with the container: 137, and no status to ask for.
-    const { deps, commands } = setup([
-      async (_command, _out, _err, session) => {
-        session.onOpen?.()
-        exited(137)
-      },
+    // An OOM kill takes the reader with the container: 137, and no status to ask for. The
+    // kubelet reports the container's end a moment later.
+    const { deps, commands, sleeps } = setup([
+      async () => exited(137),
       async () => {
         throw new Error('container not found ("job")')
       }
     ])
-    deps.jobContainerEnded = async () => 'terminated OOMKilled, exit 137'
+    let asked = 0
+    deps.jobContainerEnded = async () =>
+      ++asked < 3 ? undefined : 'terminated OOMKilled, exit 137'
     await expect(runDetachedStep(deps, OPTIONS)).rejects.toThrow(
       'the job container is no longer running (terminated OOMKilled, exit 137); ' +
         'the step ended with it'
     )
     expect(commands).toEqual(['LAUNCH', 'STATUS'])
+    expect(sleeps).toEqual([1000, 1000])
+    expect(mockInfo).not.toHaveBeenCalled()
   })
 
   it('launches again when the first launch never ran', async () => {
@@ -470,7 +478,7 @@ describe('runDetachedStep', () => {
   })
 
   it('reads on when the reader was killed and the step still runs', async () => {
-    const { deps, commands, stdout } = setup([
+    const { deps, commands, heartbeats, stdout } = setup([
       async (_command, out) => {
         out.write('before\n')
         // What the kubelet reports for a reader that `pkill node` ended.
@@ -485,6 +493,8 @@ describe('runDetachedStep', () => {
     ])
     await runDetachedStep(deps, OPTIONS)
     expect(commands).toEqual(['LAUNCH', 'STATUS', 'FOLLOW 7 0'])
+    // Only the sessions that read the step carry the hook's heartbeat.
+    expect(heartbeats).toEqual([true, undefined, true])
     expect(stdout.text).toBe('before\nafter\n')
     expect(infos()).toEqual([
       "[custom-hook] the session reading the step's output ended with exit code 143, " +

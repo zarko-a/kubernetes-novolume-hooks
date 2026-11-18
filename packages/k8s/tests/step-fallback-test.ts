@@ -340,8 +340,10 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(command[2]).toMatch(
       /HOOK_RUN_ORPHAN_SECONDS=20 HOOK_RUN_OUTPUT_LIMIT_MB=100 exec "\$hook_node" \/__w\/_custom_hook\/step-client\.js start \/__w\/_custom_hook\/steps\/[0-9a-f]{16}$/
     )
-    expect(stdin).toBeUndefined()
+    // The heartbeat for the process that reads the step's output; ended with the session.
+    expect(stdin.writableEnded).toBe(true)
     expect(io.dropAfterMs).toBe(30_000)
+    expect(io.heartbeat).toBeUndefined()
     // The handlers for the runner's cancel are gone once the step is over.
     expect(process.listenerCount('SIGINT')).toBe(0)
     expect(process.listenerCount('SIGTERM')).toBe(0)
@@ -430,7 +432,11 @@ describe('runScriptStep with the per-step HTTP sync', () => {
   })
 
   it('says the job container is gone instead of trying the exec path', async () => {
-    serverStats = stats({ started: false, upCompleted: false })
+    serverStats = stats({
+      contacted: false,
+      started: false,
+      upCompleted: false
+    })
     mockExecPodStep.mockRejectedValue(
       new Error(
         'Internal error occurred: unable to upgrade connection: container not found ("job")'

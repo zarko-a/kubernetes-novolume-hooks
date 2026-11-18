@@ -21,16 +21,20 @@ import * as shlex from 'shlex'
 //   exit code that could also be the reader's own death (128+n).
 //
 // The hook is gone only when both links to it are: HOOK_RUN_ORPHAN_SECONDS liveness polls in
-// a row failed, and no `start` or `follow` process is reading the output (containerd kills
-// that process when the hook's exec session ends). One link alone is not enough: the polls
-// fail during a pod network blip, the reader dies during an API server restart, and the
+// a row failed, and no `start` or `follow` process has heard from the hook for a few seconds.
+// The hook writes a byte a second to the stdin of its exec session, and the process reading
+// the output records that it arrived. That the reader runs proves nothing: when the hook
+// dies, its exec session stays behind in the job pod and nothing ends its process (seen on
+// EKS 1.35 with containerd 2, 2026-11-18). One link alone is not enough: the polls fail
+// during a pod network blip, the exec session breaks during an API server restart, and the
 // step must survive both.
 //
 // Files, in STEP_DIR_ROOT/<step id>/:
 //   pid          the supervisor, "<pid> <start time>" (the start time guards against PID
 //                reuse). Created exclusively: it is the lock that makes a step run once
 //   pgid         the step's process group leader, the same way
-//   follower     the process reading the output for the hook, the same way
+//   follower     the process reading the output for the hook, the same way; its modification
+//                time is when that process last heard from the hook
 //   interrupted  the step's group has had the cancel's SIGINT (it must get only one)
 //   stdout       the step's stdout, append-only
 //   stderr       the step's stderr, append-only, and every message of this client about the
@@ -82,6 +86,8 @@ export function stepRunner(
   // How long `start` waits for its supervisor, and `follow` for any supervisor.
   const SUPERVISOR_START_MS = 10000
   const FOLLOW_START_MS = 15000
+  // How long after the hook's last byte on its stdin a reader still counts as attached.
+  const READER_FRESH_MS = 5000
   // What stands in `pid` when no supervisor will ever run the step.
   const NO_SUPERVISOR = '0 none'
 
@@ -242,8 +248,8 @@ export function stepRunner(
 
   // Not this process's to act on: a step running `pkill node` must take down neither the
   // supervisor nor the reader (the hook would take the reader's 143 for the step's exit
-  // code). The step's own group gets signals through its process group; containerd ends a
-  // reader with SIGKILL.
+  // code). The step's own group gets signals through its process group; a reader is ended
+  // with SIGKILL, by the next reader.
   let signalsIgnored = false
   function ignoreSignals(): void {
     if (signalsIgnored) {
@@ -441,6 +447,18 @@ export function stepRunner(
     // that jumped, has no failed polls to show.
     const orphanPolls = Number(env.HOOK_RUN_ORPHAN_SECONDS) || 15
     let misses = 0
+    // A reader runs and has heard from the hook lately (see the top).
+    function readerAttached(): boolean {
+      try {
+        return (
+          recordedAlive(file(dir, 'follower')) &&
+          Date.now() - fs.statSync(file(dir, 'follower')).mtimeMs <
+            READER_FRESH_MS
+        )
+      } catch {
+        return false
+      }
+    }
     function poll(): void {
       checkOutput()
       let settled = false
@@ -451,12 +469,12 @@ export function stepRunner(
         settled = true
         if (!ok) {
           misses++
-          if (misses >= orphanPolls && !recordedAlive(file(dir, 'follower'))) {
+          if (misses >= orphanPolls && !readerAttached()) {
             stop(
               'the runner has not answered ' +
                 misses +
-                ' liveness checks in a row and nothing is reading the output of the ' +
-                'step (its hook process or pod is gone); stopping the step'
+                ' liveness checks in a row and its hook has stopped reading the output ' +
+                'of the step (the hook process or the runner pod is gone); stopping the step'
             )
           }
           return
@@ -587,13 +605,44 @@ export function stepRunner(
         names.forEach(name => {
           fds.push(fs.openSync(file(dir, name), 'r'))
         })
-        // What tells the supervisor that the hook still reads the step (see the top).
+        // An earlier reader is still here when its session broke without ending it, stuck
+        // on a pipe nobody reads: the hook reads this one now.
+        const earlier = readRecord(file(dir, 'follower'))
+        if (
+          earlier &&
+          earlier.pid !== process.pid &&
+          recordedAlive(file(dir, 'follower'))
+        ) {
+          try {
+            process.kill(earlier.pid, 'SIGKILL')
+          } catch {
+            // gone already
+          }
+        }
         fs.writeFileSync(file(dir, 'follower'), processRecord(process.pid))
       } catch (error) {
         note('cannot read the output of the step: ' + (error as Error).message)
         done(1)
         return
       }
+      // The hook's heartbeat (see the top): each byte on stdin moves the record's time.
+      let heardAt = 0
+      process.stdin.on('error', () => undefined)
+      process.stdin.on('data', () => {
+        const now = Date.now()
+        if (now - heardAt < 500) {
+          return
+        }
+        heardAt = now
+        try {
+          const record = readRecord(file(dir, 'follower'))
+          if (record && record.pid === process.pid) {
+            fs.utimesSync(file(dir, 'follower'), now / 1000, now / 1000)
+          }
+        } catch {
+          // the directory is gone
+        }
+      })
       loop()
     }
 

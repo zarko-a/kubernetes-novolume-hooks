@@ -14,6 +14,9 @@ export interface ExecSession {
   dropAfterMs?: number
   // Called once the session's connection is open.
   onOpen?: () => void
+  // Write a byte a second to the command's stdin for as long as the session lasts: how the
+  // process reading a step's output knows the hook is still there (step-supervisor.ts).
+  heartbeat?: boolean
 }
 
 // Runs a shell command in the job container with its output to the given streams. Resolves
@@ -67,6 +70,10 @@ export class JobContainerEndedError extends Error {
 // session that opens and breaks at once (an API server that cannot reach the kubelet yet)
 // is one more failed attempt, and does not renew the reconnect budget.
 export const ESTABLISHED_AFTER_MS = 2000
+
+// How many seconds the hook gives the kubelet to report that the job container ended, when
+// the reader's exit code suggests it.
+export const CONTAINER_END_WAITS = 3
 
 // How often the hook reads on after the session reading the output ended with a signal's
 // exit code while the step had recorded none.
@@ -157,7 +164,6 @@ export async function runDetachedStep(
   const received = { stdout: 0, stderr: 0 }
   const log = new LineGate(deps.stdout)
   let launch = true
-  let opened = false
   let lostAt: number | undefined
   let failures = 0
   let rereads = 0
@@ -230,8 +236,8 @@ export async function runDetachedStep(
         }),
         {
           dropAfterMs: options.dropAfterMs,
+          heartbeat: true,
           onOpen: () => {
-            opened = true
             if (!over && lostAt !== undefined) {
               cancelTimer = deps.setTimer(ESTABLISHED_AFTER_MS, alive)
             }
@@ -284,12 +290,25 @@ export async function runDetachedStep(
       }
       // A session that breaks because the container is gone (an OOM kill takes the whole
       // container) is not a connection problem: say so, and do not wait for a reconnect.
-      const ended = await deps.jobContainerEnded()
+      let ended = await deps.jobContainerEnded()
+      // The reader ended with a signal's exit code and nothing answers for the step: most
+      // likely the OOM killer took the container, which the kubelet reports a moment
+      // later. Wait for that before calling it a lost connection.
+      for (
+        let waits = 0;
+        code !== undefined && !ended && waits < CONTAINER_END_WAITS;
+        waits++
+      ) {
+        await deps.sleep(1000)
+        ended = await deps.jobContainerEnded()
+      }
       if (ended) {
         log.close()
         throw new JobContainerEndedError(
           `the job container is no longer running (${ended}); ` +
-            (opened ? 'the step ended with it' : 'this step cannot run')
+            (deps.contacted()
+              ? 'the step ended with it'
+              : 'this step cannot run')
         )
       }
       if (lostAt === undefined) {

@@ -20,8 +20,8 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 - What keeps a detached step from running on or overlapping the next one: the runner's
   cancel and `timeout-minutes` are forwarded to the step's process group (one SIGINT, then
   SIGKILL); the supervisor stops a step whose hook is gone, which it concludes from
-  `HOOK_STEP_ORPHAN_SECONDS` (default 15) failed liveness polls with no exec session reading
-  the output; the hook has a step killed before it gives up on reconnecting; a step left
+  `HOOK_STEP_ORPHAN_SECONDS` (default 15) failed liveness polls with no heartbeat from the
+  hook on the exec session that reads the output; the hook has a step killed before it gives up on reconnecting; a step left
   running by an interrupted earlier step is killed before the next one starts.
 - `HOOK_STEP_OUTPUT_LIMIT_MB` (default 2048): a step that writes more output than this is
   stopped, since its output now waits on the job pod's disk until the hook has read it.
