@@ -318,8 +318,8 @@ Alpine build in a musl image):
 - **The supervisor** takes a lock, runs the step's command in its own process group with
   stdout and stderr appended to two files, and records the exit code in a third.
 - **The step's command** downloads `_temp` from the hook and merges it, runs the step's
-  script as upstream does (`sh -e`), and after a script that exits 0 uploads
-  `_runner_file_commands`.
+  script as upstream does (`sh -e`), and then uploads `_runner_file_commands`, whatever the
+  script's exit code: the runner applies a failed step's outputs and summary too.
 
 Copies over HTTP are not compared file by file afterwards: `tar`'s exit status and the HTTP
 status are the check.
@@ -390,7 +390,7 @@ neighbours says why.
 | -------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `_work` to the job pod           | `fs-init` downloads it (route 3).         | The hook copies it over exec once the pod is Running (route 2), as upstream.                        | `HOOK_WORK_TRANSFER=exec`; the runner pod's IP is unknown; the server cannot start; `fs-init` reports a failed download, or nothing. A warning, except for the setting. |
 | `_temp` around a step            | HTTP inside the step's session (route 4). | The six exec sessions of upstream, for this step and the rest of the job. Those steps run attached. | The step could not be started over HTTP: a warning. Or the runner has no Node.js for the job container (a musl image on arm64): an info line.                           |
-| The file commands back           | `PUT /commands`.                          | A copy from the job pod over exec.                                                                  | The upload did not arrive: a warning.                                                                                                                                   |
+| The file commands back           | `PUT /commands`.                          | A copy from the job pod over exec. If that fails too, the step fails: its outputs would be lost.    | The upload did not arrive: a warning.                                                                                                                                   |
 | The step's output                | The exec session that started the step.   | A new exec session that resumes at the byte offsets received.                                       | The session dropped: two info lines.                                                                                                                                    |
 | The pod's events while it starts | Listed every 2s.                          | The pod's status only.                                                                              | The runner's Role has no `events` rule: a warning.                                                                                                                      |
 | Externals                        | An image volume.                          | None by itself. `HOOK_EXTERNALS=copy` restores upstream's copy.                                     | Set it where image volumes are not available.                                                                                                                           |

@@ -35,6 +35,13 @@ reviewed since and what was ported.
 - A job or service container whose arguments start with `-c` keeps the script as one argument:
   `["-c", "echo hello world"]` was split into words, so `sh` ran only `echo`. A quoted script
   the runner split on spaces is decoded. From upstream `cc83f88` (#445).
+- A failed `run:` step's outputs, environment, path and job summary reach the runner, as with
+  the runner's own steps: the step's file commands are copied back whatever the script's exit
+  code. They were dropped, so a failing test step's summary was lost. As upstream `cc83f88`
+  (#445).
+- A step fails when its file commands reach the runner neither over HTTP nor through the API
+  server, instead of passing with a warning. Later steps and jobs would otherwise see its
+  outputs as empty. As upstream `cc83f88` (#445).
 
 ## [1.1.0] - 2026-11-18
 

@@ -47,6 +47,7 @@ import {
   Stopwatch
 } from '../k8s/hook-log'
 import {
+  COMMANDS_DIR,
   formatStepTransfer,
   JOB_STEP_CLIENT,
   STEP_CLIENT_DIR,
@@ -167,6 +168,7 @@ async function runScriptStepInPod(
   args.entryPointArgs = ['-e', containerPath]
   const stepTimer = new Stopwatch()
   let stepMs = 0
+  let stepError: Error | undefined
   try {
     await execPodStep(
       [args.entryPoint, ...args.entryPointArgs],
@@ -176,7 +178,12 @@ async function runScriptStepInPod(
   } catch (err) {
     const message = formatError(err)
     core.debug(`execPodStep failed: ${message}`)
-    throw new Error(`failed to run script step: ${message}`)
+    stepError = new Error(`failed to run script step: ${message}`)
+    // Without an exit code the session was lost and the script may still be running, so
+    // what it wrote so far is not its result.
+    if (execExitCode(err) === undefined) {
+      throw stepError
+    }
   } finally {
     stepMs = stepTimer.elapsedMs()
     try {
@@ -186,26 +193,55 @@ async function runScriptStepInPod(
     }
   }
 
-  try {
-    core.debug(
-      `Copying from job pod '${state.jobPod}' ${containerTemp} to ${runnerTemp}`
-    )
-    const commandStats = await execCpFromPod(
-      state.jobPod,
-      `${containerTemp}/_runner_file_commands`,
-      `${workdir}/_temp`
-    )
-    hookInfo(
-      formatCopyStats('copy _runner_file_commands from job pod', commandStats)
-    )
-  } catch (error) {
-    core.warning('Failed to copy _temp from pod')
-  }
+  core.debug(
+    `Copying from job pod '${state.jobPod}' ${containerTemp} to ${runnerTemp}`
+  )
+  const copyError = await copyCommandsOverExec(state.jobPod, runnerTemp)
   const totalMs = totalTimer.elapsedMs()
   hookInfo(
     `run_script_step overhead ${formatSeconds(totalMs - stepMs)} ` +
       `(script ${formatSeconds(stepMs)}, total ${formatSeconds(totalMs)})`
   )
+  throwStepErrors(stepError, copyError)
+}
+
+// Copies the step's `_runner_file_commands` back through the API server, after a script
+// that exited, whatever its exit code: the runner applies a failed step's outputs and summary
+// too. Returns the error when the copy failed. The caller fails the step with it: the runner
+// would otherwise go on as if the step had written no outputs, environment, path, state or
+// summary, so a later `if:` on an output or a later job's input silently sees an empty value.
+// Ported in spirit from upstream cc83f88 (#445), which also fails the step here.
+async function copyCommandsOverExec(
+  jobPod: string,
+  runnerTemp: string
+): Promise<Error | undefined> {
+  try {
+    const stats = await execCpFromPod(
+      jobPod,
+      `/__w/_temp/${COMMANDS_DIR}`,
+      runnerTemp
+    )
+    hookInfo(formatCopyStats(`copy ${COMMANDS_DIR} from job pod`, stats))
+    return undefined
+  } catch (error) {
+    return new Error(
+      `failed to copy ${COMMANDS_DIR} from the job pod, so the step's outputs, ` +
+        `environment, path and summary are lost: ${formatError(error)}`
+    )
+  }
+}
+
+// Fails the step with its own error, the copy's, or both in one message.
+function throwStepErrors(
+  stepError: Error | undefined,
+  copyError: Error | undefined
+): void {
+  if (stepError && copyError) {
+    throw new Error(`${stepError.message}; ${copyError.message}`)
+  }
+  if (stepError || copyError) {
+    throw stepError ?? copyError
+  }
 }
 
 // Runs the step detached (see step-supervisor.ts) with `_temp` synced over HTTP (see
@@ -278,6 +314,7 @@ async function runStepOverHttp(
       stdin?.end()
     }
   }
+  let stepError: Error | undefined
   const cancel = installStepCancel(server.cancel, {
     process,
     signalStep: async signal =>
@@ -340,7 +377,12 @@ async function runStepOverHttp(
     removeRunScript(runnerPath)
     const message = formatError(err)
     core.debug(`execPodStep failed: ${message}`)
-    throw new Error(`failed to run script step: ${message}`)
+    stepError = new Error(`failed to run script step: ${message}`)
+    // The script ran and exited: what it wrote to `_runner_file_commands` counts, as for a
+    // step that passed. After a lost connection or a cancel it is not the step's result.
+    if (!server.stats.started || exitCode === undefined || cancel.cancelled()) {
+      throw stepError
+    }
   } finally {
     await cancel.finish()
     await server.close()
@@ -348,25 +390,13 @@ async function runStepOverHttp(
   removeRunScript(runnerPath)
 
   const { stats } = server
+  let copyError: Error | undefined
   if (!stats.upCompleted) {
     core.warning(
-      `${HOOK_LOG_PREFIX} _runner_file_commands did not arrive over HTTP` +
+      `${HOOK_LOG_PREFIX} ${COMMANDS_DIR} did not arrive over HTTP` +
         `${stats.error ? ` (${stats.error})` : ''}; copying it through the API server instead`
     )
-    try {
-      hookInfo(
-        formatCopyStats(
-          'copy _runner_file_commands from job pod',
-          await execCpFromPod(
-            jobPod,
-            '/__w/_temp/_runner_file_commands',
-            runnerTemp
-          )
-        )
-      )
-    } catch (error) {
-      core.warning('Failed to copy _temp from pod')
-    }
+    copyError = await copyCommandsOverExec(jobPod, runnerTemp)
   } else {
     hookInfo(formatStepTransfer(stats))
   }
@@ -380,6 +410,7 @@ async function runStepOverHttp(
   } else {
     hookInfo(`run_script_step total ${formatSeconds(totalMs)}`)
   }
+  throwStepErrors(stepError, copyError)
   return true
 }
 

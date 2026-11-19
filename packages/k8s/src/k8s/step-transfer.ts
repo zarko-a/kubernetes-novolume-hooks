@@ -43,7 +43,7 @@ export const STEP_CLIENT_FAILED_EXIT = 213
 // this code only while the server's `started` flag is false.
 export const STEP_CLIENT_NO_NODE_EXIT = 214
 
-const COMMANDS_DIR = '_runner_file_commands'
+export const COMMANDS_DIR = '_runner_file_commands'
 
 export interface StepServeStats {
   // Any authorized request arrived: the step's supervisor or client is running.
@@ -375,7 +375,8 @@ export interface StepCommandOptions {
 }
 
 // The one shell command an exec session runs for a step: the client's `down`, the step's
-// script (`sh -e <script>`, as the exec path runs it), and on success the client's `up`.
+// script (`sh -e <script>`, as the exec path runs it), and the client's `up`, whatever the
+// script's exit code: the runner applies a failed step's outputs and summary too.
 // The client runs with the runner's node24 from `/__e`, the Alpine build when the image uses
 // musl. Exits with the script's exit code, or before the script runs with
 // STEP_CLIENT_NO_NODE_EXIT (silently) if that node is missing, or STEP_CLIENT_FAILED_EXIT if
@@ -392,10 +393,8 @@ export function stepCommand(options: StepCommandOptions): string {
     'fi',
     `sh -e ${q(options.scriptPath)}`,
     'hook_rc=$?',
-    'if [ "$hook_rc" = 0 ]; then',
-    `  if ! hook_err=$(${auth} HOOK_STEP_PACK=${q(options.pack)} "$hook_node" ${client} up 2>&1 >/dev/null); then`,
-    `    echo "${HOOK_LOG_PREFIX} ${COMMANDS_DIR} upload failed: $hook_err" >&2`,
-    '  fi',
+    `if ! hook_err=$(${auth} HOOK_STEP_PACK=${q(options.pack)} "$hook_node" ${client} up 2>&1 >/dev/null); then`,
+    `  echo "${HOOK_LOG_PREFIX} ${COMMANDS_DIR} upload failed: $hook_err" >&2`,
     'fi',
     'exit $hook_rc'
   ].join('\n')

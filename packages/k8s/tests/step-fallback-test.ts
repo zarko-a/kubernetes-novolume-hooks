@@ -286,7 +286,7 @@ describe('runScriptStep with the per-step HTTP sync', () => {
   })
 
   it('fails the step, without the exec path, when the started step failed', async () => {
-    serverStats = stats({ upCompleted: false, upRequestedAt: undefined })
+    // The step command uploaded the file commands before it exited.
     mockExecPodStep.mockRejectedValue(
       new Error('command terminated with exit code 3')
     )
@@ -300,6 +300,74 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(execPathRan()).toBe(false)
     expect(mockExecCpFromPod).not.toHaveBeenCalled()
     expect(closeServer).toHaveBeenCalled()
+    expect(mockInfo).toHaveBeenCalledWith(
+      expect.stringContaining('sync _temp over HTTP')
+    )
+  })
+
+  it("copies a failed step's file commands over exec when their upload did not arrive", async () => {
+    serverStats = stats({ upCompleted: false, error: 'receiving: aborted' })
+    mockExecPodStep.mockRejectedValue(
+      new Error('command terminated with exit code 3')
+    )
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      /^failed to run script step: command terminated with exit code 3$/
+    )
+    expect(mockExecCpFromPod).toHaveBeenCalledWith(
+      'pod',
+      '/__w/_temp/_runner_file_commands',
+      path.join(work, '_temp')
+    )
+    expect(execPathRan()).toBe(false)
+  })
+
+  it("names both errors when a failed step's file commands cannot be copied either", async () => {
+    serverStats = stats({ upCompleted: false })
+    mockExecPodStep.mockRejectedValue(
+      new Error('command terminated with exit code 3')
+    )
+    mockExecCpFromPod.mockRejectedValue(new Error('pod not found'))
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      'failed to run script step: command terminated with exit code 3; ' +
+        "failed to copy _runner_file_commands from the job pod, so the step's " +
+        'outputs, environment, path and summary are lost: pod not found'
+    )
+  })
+
+  it('fails a step that passed when its file commands arrive neither way', async () => {
+    serverStats = stats({ upCompleted: false, upRequestedAt: undefined })
+    mockExecCpFromPod.mockRejectedValue(new Error('pod not found'))
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(
+      /^failed to copy _runner_file_commands from the job pod, so the step's outputs, environment, path and summary are lost: pod not found$/
+    )
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('did not arrive over HTTP')
+    )
+  })
+
+  it('does not copy the file commands back after a lost connection to a started step', async () => {
+    process.env.HOOK_STEP_RECONNECT_SECONDS = '1'
+    serverStats = stats({ upCompleted: false, upRequestedAt: undefined })
+    mockExecPodStep.mockRejectedValue(
+      new Error(
+        'the exec stream closed before the command reported an exit status'
+      )
+    )
+
+    await expect(
+      runScriptStep(ARGS, { jobPod: 'pod', stepTransfer: 'http' })
+    ).rejects.toThrow(/^failed to run script step: lost the connection/)
+    expect(mockExecCpFromPod).not.toHaveBeenCalled()
+    expect(execPathRan()).toBe(false)
   })
 
   it('copies the file commands back over exec when the upload did not arrive', async () => {
@@ -454,5 +522,82 @@ describe('runScriptStep with the per-step HTTP sync', () => {
     expect(execPathRan()).toBe(false)
     expect(mockWarning).not.toHaveBeenCalled()
     expect(serverCancel.delivered).toBeUndefined()
+  })
+})
+
+describe('runScriptStep on the exec path', () => {
+  let work: string
+  let savedEnv: NodeJS.ProcessEnv
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    savedEnv = { ...process.env }
+    work = fs.mkdtempSync(path.join(os.tmpdir(), 'step-exec-'))
+    fs.mkdirSync(path.join(work, '_temp'))
+    process.env.RUNNER_WORKSPACE = path.join(work, 'repo')
+    process.env.RUNNER_TEMP = path.join(work, '_temp')
+    mockExecCpToPod.mockResolvedValue(COPY_STATS)
+    mockExecCpFromPod.mockResolvedValue(COPY_STATS)
+  })
+
+  afterEach(() => {
+    process.env = savedEnv
+    fs.rmSync(work, { recursive: true, force: true })
+  })
+
+  // The step's script fails with `error`; the hook's own commands succeed.
+  function scriptFails(error: Error): void {
+    mockExecPodStep.mockImplementation(async (command: string[]) => {
+      if (command[0] === 'sh' && command[1] === '-e') {
+        throw error
+      }
+      return 0
+    })
+  }
+
+  it('copies the file commands back after a script that failed, then fails the step', async () => {
+    scriptFails(new Error('command terminated with exit code 3'))
+
+    await expect(runScriptStep(ARGS, { jobPod: 'pod' })).rejects.toThrow(
+      /^failed to run script step: command terminated with exit code 3$/
+    )
+    expect(mockExecCpFromPod).toHaveBeenCalledWith(
+      'pod',
+      '/__w/_temp/_runner_file_commands',
+      path.join(work, '_temp')
+    )
+  })
+
+  it('does not copy the file commands back after a lost connection', async () => {
+    scriptFails(
+      new Error(
+        'the exec stream closed before the command reported an exit status'
+      )
+    )
+
+    await expect(runScriptStep(ARGS, { jobPod: 'pod' })).rejects.toThrow(
+      'failed to run script step: the exec stream closed before the command ' +
+        'reported an exit status'
+    )
+    expect(mockExecCpFromPod).not.toHaveBeenCalled()
+  })
+
+  it('fails a step that passed when its file commands cannot be copied back', async () => {
+    mockExecPodStep.mockResolvedValue(0)
+    mockExecCpFromPod.mockRejectedValue(new Error('pod not found'))
+
+    await expect(runScriptStep(ARGS, { jobPod: 'pod' })).rejects.toThrow(
+      /^failed to copy _runner_file_commands from the job pod, so the step's outputs, environment, path and summary are lost: pod not found$/
+    )
+  })
+
+  it("names both errors when a failed step's file commands cannot be copied back", async () => {
+    scriptFails(new Error('command terminated with exit code 3'))
+    mockExecCpFromPod.mockRejectedValue(new Error('pod not found'))
+
+    await expect(runScriptStep(ARGS, { jobPod: 'pod' })).rejects.toThrow(
+      'failed to run script step: command terminated with exit code 3; ' +
+        'failed to copy _runner_file_commands from the job pod'
+    )
   })
 })

@@ -280,15 +280,21 @@ describe('per-step _temp sync', () => {
     )
   })
 
-  it('returns a failing step exit code and sends nothing back', async () => {
-    write(path.join(runnerTemp, 'step.sh'), 'echo "about to fail"\nexit 3\n')
+  it('returns a failing step exit code and still sends its file commands back', async () => {
+    write(
+      path.join(runnerTemp, 'step.sh'),
+      `echo "about to fail"\necho "report" > ${jobWork}/_temp/_runner_file_commands/step_summary_3\nexit 3\n`
+    )
     const result = await run(
       'sh',
       ['-c', command(`${jobWork}/_temp/step.sh`)],
       {}
     )
     expect(result).toEqual({ code: 3, stdout: 'about to fail\n', stderr: '' })
-    expect(server.stats).toMatchObject({ started: true, upCompleted: false })
+    expect(server.stats).toMatchObject({ started: true, upCompleted: true })
+    expect(
+      read(path.join(runnerTemp, '_runner_file_commands/step_summary_3'))
+    ).toBe('report\n')
   })
 
   it('stops before the step when the client cannot start it', async () => {
