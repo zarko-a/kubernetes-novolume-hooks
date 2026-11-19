@@ -1,0 +1,114 @@
+# Values for ARC's gha-runner-scale-set chart (tested with 0.15.1): one scale set that serves
+# every job size, with the job pod sized per job. Adapted from the author's production set.
+#
+#   helm install example-runners \
+#     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     --version 0.15.1 --namespace github-actions-runners -f values.yaml
+#
+# Before it: the ConfigMaps in job-profiles.yaml, and the job-started hook (see job-started.sh).
+# Upstream's values, with everything left out here:
+# https://github.com/actions/actions-runner-controller/blob/master/charts/gha-runner-scale-set/values.yaml
+
+githubConfigUrl: https://github.com/<organization>
+# A Secret with the GitHub App's credentials (or a token), as ARC documents.
+githubConfigSecret: github-auth
+
+# The scale set's name is what workflows put in `runs-on`.
+runnerScaleSetName: example-runners
+
+# One warm runner: a job starts on it at once instead of waiting for a runner pod. Sizing per
+# job is what makes that cheap, since one set (and so one idle runner) serves every size.
+minRunners: 1
+maxRunners: 50
+
+containerMode:
+  type: kubernetes-novolume
+  kubernetesModeAdditionalRoleRules:
+    # The hook prints the job pod's events in the job log while the pod starts. Without this
+    # rule it shows only the pod's status, with a warning.
+    - apiGroups: ['']
+      resources: ['events']
+      verbs: ['get', 'list']
+    # Not for the hook: job-started.sh annotates the runner's own pod once it has a job.
+    - apiGroups: ['']
+      resources: ['pods']
+      verbs: ['patch']
+
+template:
+  spec:
+    # The runner pod, not the job pod: the runner image is multi-arch, so it runs on amd64 and
+    # arm64 nodes alike. The job pod's architecture comes from the job (HOOK_JOB_ARCH).
+    nodeSelector:
+      kubernetes.io/os: linux
+    containers:
+      - name: runner
+        image: &runner_image <registry>/<repository>:<tag>
+        command: ['/home/runner/run.sh']
+        env:
+          - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+            value: /home/runner/k8s-novolume/index.js
+          - name: ACTIONS_RUNNER_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          # fs-init runs this image and the externals volume mounts it, so it must be the
+          # runner container's own image.
+          - name: ACTIONS_RUNNER_IMAGE
+            value: *runner_image
+          - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+            value: 'true'
+          # The hook serves the job pod's _work, and each step's _temp, over HTTP from this
+          # address. Without it the hook guesses the pod's first non-internal IPv4 address,
+          # and if that fails it copies through the API server, with a warning in the job log.
+          - name: ACTIONS_RUNNER_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          # Per-job sizing: the profiles in job-profiles.yaml, and the most a job may ask for.
+          - name: HOOK_JOB_PROFILE_DIR
+            value: /home/runner/job-profiles
+          - name: HOOK_JOB_PROFILES
+            value: standard,podman
+          - name: HOOK_JOB_MAX_MEMORY
+            value: 26Gi
+          - name: HOOK_JOB_MAX_CPU
+            value: '14'
+          - name: HOOK_JOB_MAX_DISK
+            value: 25Gi
+          # Must be at least HOOK_JOB_MAX_CPU, or the hook refuses every job.
+          - name: HOOK_JOB_CPU_LIMIT
+            value: '20'
+          - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
+            value: /home/runner/job-hooks/job-started.sh
+        volumeMounts:
+          - name: job-profiles
+            mountPath: /home/runner/job-profiles
+            readOnly: true
+          - name: job-hooks
+            mountPath: /home/runner/job-hooks
+            readOnly: true
+        # Sized for the runner agent, the hook and the log stream, not for the job: 500Mi was
+        # OOM-killed during jobs with large action trees. The ephemeral-storage request keeps
+        # the kubelet from evicting the runner, and losing its job, ahead of the job pods under
+        # node disk pressure. The runner pod holds only _actions and _temp (the workspace
+        # lives in the job pod): 0.26Gi at most was measured.
+        resources:
+          requests:
+            cpu: 100m
+            memory: 750Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 2
+            memory: 750Mi
+    volumes:
+      - name: job-profiles
+        configMap:
+          name: job-profiles
+      - name: job-hooks
+        configMap:
+          name: job-hooks
+
+# The service account of the ARC controller installed in your cluster.
+controllerServiceAccount:
+  namespace: github-actions-controller
+  name: github-actions-controller-gha-rs-controller

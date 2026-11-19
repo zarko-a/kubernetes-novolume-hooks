@@ -65,7 +65,7 @@ const STEP_HTTP_OFF = 'step-http-off'
 // Runner settings for detached steps (see step-supervisor.ts), read from the runner's env
 // only, so a workflow cannot change them.
 const RECONNECT_SETTING = 'HOOK_STEP_RECONNECT_SECONDS'
-const RECONNECT_DEFAULT_SECONDS = 300
+const RECONNECT_DEFAULT_SECONDS = 60
 const ORPHAN_SETTING = 'HOOK_STEP_ORPHAN_SECONDS'
 const ORPHAN_DEFAULT_SECONDS = 15
 const OUTPUT_LIMIT_SETTING = 'HOOK_STEP_OUTPUT_LIMIT_MB'

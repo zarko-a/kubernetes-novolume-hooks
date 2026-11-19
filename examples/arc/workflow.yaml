@@ -1,0 +1,38 @@
+# A workflow on the scale set of values.yaml: each job asks for its job pod's size in its job
+# container's env. A value over the runner's limits, a malformed one or a missing required one
+# fails the job in "Initialize containers", before any pod is created, naming every problem.
+name: example
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: example-runners
+    container:
+      image: node:24
+      env:
+        # Required: the job container's memory request and limit, and its CPU request.
+        HOOK_JOB_MEMORY: 5Gi
+        # Quoted: YAML reads a bare 3 as a number, and env values must be strings.
+        HOOK_JOB_CPU: '3'
+        # Optional: amd64 (the default), arm64, or any for a multi-arch image.
+        HOOK_JOB_ARCH: arm64
+        # Optional: the ephemeral-storage request, when the profile's default is too small.
+        HOOK_JOB_DISK: 10Gi
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm ci && npm test
+
+  build-image:
+    runs-on: example-runners
+    container:
+      image: quay.io/podman/stable
+      env:
+        HOOK_JOB_MEMORY: 6Gi
+        HOOK_JOB_CPU: '4'
+        # The privileged profile with podman's storage (job-profiles.yaml).
+        HOOK_JOB_PROFILE: podman
+    steps:
+      - uses: actions/checkout@v5
+      - run: podman build -t example:test .

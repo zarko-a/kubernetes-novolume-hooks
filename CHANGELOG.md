@@ -8,6 +8,25 @@ Forked from [actions/runner-container-hooks](https://github.com/actions/runner-c
 
 ## [Unreleased]
 
+### Added
+
+- `examples/arc`: a whole setup to start from. A `Dockerfile` that builds the runner image
+  from a pinned commit of this project, values for ARC's `gha-runner-scale-set` chart (one
+  scale set with a warm runner and per-job sizing), the ConfigMap of job profiles, a runner
+  job-started hook for Karpenter, and a workflow whose jobs ask for their pod's size.
+
+### Changed
+
+- `HOOK_STEP_RECONNECT_SECONDS` defaults to 60 instead of 300. A replaced API server instance
+  is reachable again within seconds (the reconnects measured so far took 1-2 s), so the
+  longer wait only delayed the failure of a step whose job pod could no longer be reached.
+- The README describes how the hook works and how it differs from upstream: which side
+  connects to which, the HTTP transfers and their fallbacks through the API server, the
+  step's liveness checks, and the hook's lines in the job log. It also has benchmark and
+  production numbers against upstream, usage with ARC, what the hook was tested with, and
+  what counts as a breaking change. `packages/k8s/README.md` no longer repeats upstream's
+  prerequisites and points there.
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

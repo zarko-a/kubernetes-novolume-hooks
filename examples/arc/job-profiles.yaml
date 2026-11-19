@@ -1,0 +1,104 @@
+# The profiles a runner with HOOK_JOB_PROFILE_DIR builds job pods from (see values.yaml, which
+# mounts this ConfigMap there), and the two ConfigMaps the podman profile mounts. Adapted from
+# the author's production set, which runs on EKS with Karpenter.
+#
+#   kubectl --namespace github-actions-runners apply -f job-profiles.yaml
+#
+# The hook looks for profile-<HOOK_JOB_PROFILE>.yaml. A profile is a pod template in the
+# format of ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE: `$job` is the job container. The hook sets
+# that container's memory and CPU, its ephemeral-storage request when the job sets
+# HOOK_JOB_DISK, and the kubernetes.io/arch node selector, from the job's HOOK_JOB_* values.
+# So a profile leaves memory and CPU out, and its ephemeral-storage request is only the
+# default for jobs that do not set HOOK_JOB_DISK.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: job-profiles
+data:
+  # ephemeral-storage requests keep the scheduler from packing more job pods onto a node than
+  # its disk can hold: the job's workspace (the hook's `work` emptyDir) and the container's
+  # writable layer both count against it. No limit on purpose: exceeding an ephemeral-storage
+  # limit evicts the job mid-run.
+  #
+  # hostUsers: false runs the job in a user namespace: UID 0 in the container is an
+  # unprivileged UID on the node, so jobs that need root (to install packages, say) gain no
+  # privileges on the node. Needs kernel 6.3 or later and Kubernetes 1.33 or later.
+  #
+  # karpenter.sh/do-not-disrupt keeps Karpenter from consolidating a node away under a
+  # running job.
+  profile-standard.yaml: |
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: 12h
+    spec:
+      hostUsers: false
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: $job
+          resources:
+            requests:
+              ephemeral-storage: 2Gi
+
+  # For jobs that build images with podman. Privileged, so no hostUsers: a privileged
+  # container cannot run in a user namespace. The 15Gi default is what image builds write.
+  profile-podman.yaml: |
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: 12h
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: $job
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+            - name: podman-storage-config
+              mountPath: /etc/containers/storage.conf
+              subPath: storage.conf
+            - name: podman-registries-config
+              mountPath: /etc/containers/registries.conf.d/99-short-names.conf
+              subPath: registries.conf
+          resources:
+            requests:
+              ephemeral-storage: 15Gi
+          securityContext:
+            privileged: true
+      volumes:
+        - name: storage
+          emptyDir: {}
+        - name: podman-storage-config
+          configMap:
+            name: podman-storage-config
+        - name: podman-registries-config
+          configMap:
+            name: podman-registries-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podman-storage-config
+data:
+  storage.conf: |
+    [storage]
+    driver = "overlay"
+    runroot = "/storage/run/containers/storage"
+    graphroot = "/storage/.local/share/containers/storage"
+    rootless_storage_path = "/storage/.local/share/containers/storage"
+    [storage.options]
+    pull_options = {enable_partial_images = "true", use_hard_links = "false", ostree_repos=""}
+    [storage.options.overlay]
+---
+# A registries.conf.d drop-in, not a replacement of /etc/containers/registries.conf: podman 6
+# images ship short-name-mode="enforcing" in a drop-in of their own, which wins over the main
+# file, and with several search registries and no TTY every short image name then fails.
+# Drop-ins apply in file-name order, so the 99- prefix makes this one last.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podman-registries-config
+data:
+  registries.conf: |
+    unqualified-search-registries = ["docker.io", "quay.io"]
+    short-name-mode = "permissive"
