@@ -28,6 +28,14 @@ reviewed since and what was ported.
   what counts as a breaking change. `packages/k8s/README.md` no longer repeats upstream's
   prerequisites and points there.
 
+### Fixed
+
+- The `job.container.ports` context is filled in for a job container with `ports:`; it was
+  always empty. Service containers' ports were already right. From upstream `cc83f88` (#445).
+- A job or service container whose arguments start with `-c` keeps the script as one argument:
+  `["-c", "echo hello world"]` was split into words, so `sh` ran only `echo`. A quoted script
+  the runner split on spaces is decoded. From upstream `cc83f88` (#445).
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

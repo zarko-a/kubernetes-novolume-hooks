@@ -321,11 +321,25 @@ function mergeLists<T>(base?: T[], from?: T[]): T[] {
   return b
 }
 
+// Ported from upstream cc83f88 (#445). A `-c` script, after `sh` (our exec commands) or first
+// (a job or service container's `entryPointArgs`), stays one argument; re-tokenizing it would
+// leave `sh -c` running only its first word. The runner also sends shell-quoted arguments
+// split on spaces, so a quoted script spread over several entries is decoded.
 export function fixArgs(args: string[]): string[] {
-  // Preserve shell command strings passed via `sh -c` without re-tokenizing.
-  // Retokenizing would split the script into multiple args, breaking `sh -c`.
-  if (args.length >= 2 && args[0] === 'sh' && args[1] === '-c') {
-    return args
+  if (
+    args[0] === '-c' ||
+    (args.length >= 2 && args[0] === 'sh' && args[1] === '-c')
+  ) {
+    const scriptIndex = args[0] === '-c' ? 1 : 2
+    const script = args[scriptIndex] ?? ''
+    const quotedScript = args
+      .slice(scriptIndex)
+      .join(' ')
+      .match(/^(?:"(?:[^"\\]|\\[\s\S])*"|'[^']*')(?=\s|$)/)
+    // Only decode a quoted script that spans argv entries, not a complete raw script.
+    if (!quotedScript || quotedScript[0].length <= script.length) {
+      return args
+    }
   }
   return shlex.split(args.join(' '))
 }

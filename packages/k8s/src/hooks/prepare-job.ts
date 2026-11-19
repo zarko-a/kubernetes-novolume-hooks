@@ -463,17 +463,9 @@ function generateResponseFile(
     c => c.name === JOB_CONTAINER_NAME
   )
   if (mainContainer) {
-    const mainContainerContextPorts: ContextPorts = {}
-    if (mainContainer?.ports) {
-      for (const port of mainContainer.ports) {
-        mainContainerContextPorts[port.containerPort] =
-          mainContainerContextPorts.hostPort
-      }
-    }
-
     response.context['container'] = {
       image: mainContainer.image,
-      ports: mainContainerContextPorts
+      ports: contextPorts(mainContainer)
     }
   }
 
@@ -485,24 +477,27 @@ function generateResponseFile(
 
     response.context['services'] = appPod?.spec?.containers
       ?.filter(c => serviceContainerNames.includes(c.name))
-      .map(c => {
-        const ctxPorts: ContextPorts = {}
-        if (c.ports?.length) {
-          for (const port of c.ports) {
-            if (port.containerPort && port.hostPort) {
-              ctxPorts[port.containerPort.toString()] = port.hostPort.toString()
-            }
-          }
-        }
-
-        return {
-          image: c.image,
-          ports: ctxPorts
-        }
-      })
+      .map(c => ({
+        image: c.image,
+        ports: contextPorts(c)
+      }))
   }
 
   writeToResponseFile(responseFile, JSON.stringify(response))
+}
+
+// The `ports` of a job or service container in the runner's `job.container` and `job.services`
+// contexts: container port to host port, for ports mapped to the host. Ported from upstream
+// cc83f88 (#445), which fixed the job container's map reading `hostPort` from itself (always
+// empty).
+export function contextPorts(container: k8s.V1Container): ContextPorts {
+  const ports: ContextPorts = {}
+  for (const port of container.ports ?? []) {
+    if (port.containerPort && port.hostPort) {
+      ports[port.containerPort.toString()] = port.hostPort.toString()
+    }
+  }
+  return ports
 }
 
 export function createContainerSpec(
