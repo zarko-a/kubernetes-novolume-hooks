@@ -4,7 +4,8 @@ All notable changes to this project are recorded here. The project uses
 [semantic versioning](https://semver.org/).
 
 Forked from [actions/runner-container-hooks](https://github.com/actions/runner-container-hooks)
-`main` at `d4731a4`. Last reviewed upstream commit: `d4731a4` (upstream `main`, 2026-11-09).
+`main` at `d4731a4`. [UPSTREAM.md](./UPSTREAM.md) records which upstream commits have been
+reviewed since and what was ported.
 
 ## [Unreleased]
 
