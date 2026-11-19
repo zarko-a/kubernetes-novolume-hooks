@@ -9,6 +9,8 @@ reviewed since and what was ported.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
 ### Added
 
 - `examples/arc`: a whole setup to start from. A `Dockerfile` that builds the runner image
